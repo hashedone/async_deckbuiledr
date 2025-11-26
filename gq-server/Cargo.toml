@@ -8,8 +8,11 @@ tracing.workspace = true
 
 color-eyre = "0.6.5"
 juniper = "0.17.0"
-tokio = { version = "1.48.0", features = ["macros", "parking_lot", "rt-multi-thread", "tracing"]}
+tokio = { version = "1.48.0", features = ["macros", "parking_lot", "rt-multi-thread", "tracing", "fs"]}
 warp = { version = "0.4.2", features = ["server"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-error = "0.2.1"
 juniper_warp = "0.9.0"
+toml = { version = "0.9.8", features = ["parse"] }
+serde = { version = "1.0.228", features = ["derive"] }
+structopt = "0.3.26"
