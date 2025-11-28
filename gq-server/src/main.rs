@@ -14,7 +14,7 @@ use crate::opt::Opt;
 use crate::query::Query;
 
 mod config;
-mod context;
+pub mod context;
 mod mutation;
 mod opt;
 mod query;
@@ -31,7 +31,7 @@ fn setup_tracing(config: config::Logging) {
     };
 
     let filter_layer = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(""))
+        .or_else(|_| EnvFilter::try_new("info"))
         .unwrap();
 
     let filter_layer = config
@@ -67,17 +67,22 @@ async fn main() -> Result<()> {
     );
 
     // Defining routes
+    let context = Context::new();
     let schema = RootNode::new(Query, Mutation, EmptySubscription::<Context>::new());
 
-    let api = warp::post()
-        .and(warp::path("api"))
-        .and(juniper_warp::make_graphql_filter(
-            schema,
-            warp::any().map(|| Context),
-        ))
-        .with(warp::trace(
-            |info| tracing::info_span!("api", method=%info.method(), path=%info.path()),
-        ));
+    let api = {
+        let context = context.clone();
+
+        warp::post()
+            .and(warp::path("api"))
+            .and(juniper_warp::make_graphql_filter(
+                schema,
+                warp::any().map(move || context.clone()),
+            ))
+            .with(warp::trace(
+                |info| tracing::info_span!("api", method=%info.method(), path=%info.path()),
+            ))
+    };
 
     let playground = warp::get().and(warp::path("pg"));
     let playground = match &config.graphiql {

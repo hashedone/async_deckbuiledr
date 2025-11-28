@@ -26,7 +26,7 @@ pub struct Logging {
     pub filters: Vec<Directive>,
 
     /// Logging format
-    format: LogFormat,
+    pub format: LogFormat,
 }
 
 impl Logging {
@@ -53,6 +53,7 @@ pub struct Config {
     pub graphiql: bool,
 
     /// Logging configuration
+    #[serde(default)]
     pub logging: Logging,
 }
 
