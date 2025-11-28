@@ -1,9 +1,9 @@
 //! GraphQL async deckbuilder interface
 
+use clap::Parser;
 use color_eyre::Result;
 use juniper::{EmptySubscription, RootNode};
-use structopt::StructOpt;
-use tokio::fs::read_to_string;
+use std::io::read_to_string;
 use tracing::info;
 use warp::Filter;
 
@@ -53,16 +53,18 @@ impl warp::reject::Reject for PlaygroundDisabled {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let opt = Opt::from_args();
+    let Opt {
+        config: mut config_file,
+    } = Opt::parse();
 
-    let config = read_to_string(&opt.config).await?;
+    let config = read_to_string(&mut config_file)?;
     let config: Config = toml::from_str(&config)?;
 
     setup_tracing(config.logging);
     color_eyre::install()?;
 
     info!(
-        config = ?opt.config,
+        config = ?config_file.path().path(),
         "Tracing initialized, setting up a service"
     );
 

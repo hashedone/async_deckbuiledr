@@ -1,12 +1,12 @@
-use structopt::StructOpt;
+use clio::Input;
 
-#[derive(Clone, Debug, StructOpt)]
-#[structopt(
+#[derive(Clone, Debug, clap::Parser)]
+#[command(
     name = "deckbuilder-service",
     about = "Async Deckbuiler GraphQL service"
 )]
 pub struct Opt {
     /// Config file path
-    #[structopt(short, long, default_value = "config.toml")]
-    pub config: std::path::PathBuf,
+    #[structopt(short, long, value_parser, default_value = "config.toml")]
+    pub config: Input,
 }
