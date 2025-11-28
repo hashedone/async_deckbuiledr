@@ -16,10 +16,10 @@ struct CreatedAdHocUser {
 }
 
 #[derive(Debug, Default)]
-pub struct Users;
+pub struct UsersMutations;
 
 #[graphql_object]
-impl Users {
+impl UsersMutations {
     /// Creates a short living user authorized with a token. Returns user authorization token.
     async fn create_adhoc(nickname: String, context: &Context) -> CreatedAdHocUser {
         let user_id = context.users().create(nickname).await;

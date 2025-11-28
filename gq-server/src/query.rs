@@ -10,5 +10,5 @@ mod users;
 #[graphql(context = Context)]
 pub struct Query {
     /// User related queries
-    users: users::Users,
+    users: users::UsersQueries,
 }

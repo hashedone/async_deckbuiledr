@@ -6,10 +6,10 @@ use crate::context::Users as UsersContext;
 use crate::context::users::UserId;
 
 #[derive(Debug, Default)]
-pub struct Users;
+pub struct UsersQueries;
 
 #[graphql_object]
-impl Users {
+impl UsersQueries {
     /// Queries for all user ids
     async fn all(context: &UsersContext) -> Vec<UserId> {
         context

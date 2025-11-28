@@ -153,3 +153,58 @@ impl Default for Auth {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::context::Users;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn verify_with_generated_token() {
+        let auth = Auth::default();
+        let users = Users::default();
+
+        let user1 = users.create("user1").await;
+        let token1 = auth.create_user_token(user1).await;
+        let authorized_user = auth.verify_user_token(&token1).await.unwrap();
+
+        assert_eq!(user1, authorized_user);
+
+        // Checking if everything works when another users are added
+        let user2 = users.create("user2").await;
+        let token2 = auth.create_user_token(user2).await;
+        // Also multiple tokens for single user;
+        let token3 = auth.create_user_token(user2).await;
+
+        let user4 = users.create("user1").await;
+        let token4 = auth.create_user_token(user4).await;
+
+        let authorized_user = auth.verify_user_token(&token1).await.unwrap();
+        assert_eq!(user1, authorized_user);
+
+        let authorized_user = auth.verify_user_token(&token2).await.unwrap();
+        assert_eq!(user2, authorized_user);
+
+        let authorized_user = auth.verify_user_token(&token3).await.unwrap();
+        assert_eq!(user2, authorized_user);
+
+        let authorized_user = auth.verify_user_token(&token4).await.unwrap();
+        assert_eq!(user4, authorized_user);
+    }
+
+    #[tokio::test]
+    async fn verify_with_random_data_fails() {
+        let auth = Auth::default();
+        let _ = auth.verify_user_token("fake_token").await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn verify_with_invalid_key_fails() {
+        let auth = Auth::default();
+        let _ = auth
+            .verify_user_token("U7PydAY1TsKmmVGf4LS3YA==.PUGKx45wSK+0rhl4F2TDdg==")
+            .await
+            .unwrap_err();
+    }
+}

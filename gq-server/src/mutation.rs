@@ -11,5 +11,5 @@ use crate::context::Context;
 #[derivative(Default(new = "true"))]
 #[graphql(context = Context)]
 pub struct Mutation {
-    users: users::Users,
+    users: users::UsersMutations,
 }
