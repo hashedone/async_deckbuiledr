@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 tracing.workspace = true
+derivative.workspace = true
 
 color-eyre = "0.6.5"
 juniper = "0.17.0"

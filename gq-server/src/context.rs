@@ -5,7 +5,7 @@ pub mod users;
 
 use auth::Auth;
 use std::sync::Arc;
-use users::Users;
+pub use users::Users;
 
 struct ContextInner {
     /// Users manager

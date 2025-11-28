@@ -1,12 +1,14 @@
 //! Serivce users storage
 
 use std::collections::{HashMap, hash_map};
+use std::fmt;
 use std::str::FromStr;
 
 use base64::prelude::*;
 use color_eyre::Report;
 use color_eyre::eyre::eyre;
-use juniper::{GraphQLObject, graphql_object};
+use derivative::Derivative;
+use juniper::{FromContext, GraphQLObject, graphql_object};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
@@ -23,12 +25,8 @@ impl UserId {
         Self(uuid)
     }
 
-    pub fn id(&self) -> String {
-        BASE64_STANDARD.encode(self.0.as_bytes())
-    }
-
-    async fn user(&self, context: &Context) -> Option<User> {
-        context.users().user(*self).await
+    async fn user(&self, context: &Users) -> Option<User> {
+        context.user(*self).await
     }
 }
 
@@ -45,6 +43,12 @@ impl FromStr for UserId {
     }
 }
 
+impl fmt::Display for UserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", BASE64_STANDARD.encode(self.0.as_bytes()))
+    }
+}
+
 /// User queryable data
 #[derive(Debug, Clone, GraphQLObject)]
 pub struct User {
@@ -58,20 +62,15 @@ pub struct UserData {
     pub nickname: String,
 }
 
-/// Users storage.
+// Users storage.
+#[derive(Derivative)]
+#[derivative(Default(new = "true"))]
 pub struct Users {
     /// Users map
     users: RwLock<HashMap<Uuid, UserData>>,
 }
 
 impl Users {
-    /// Creates new `Users` storage manager.
-    pub fn new() -> Self {
-        Self {
-            users: RwLock::new(HashMap::new()),
-        }
-    }
-
     /// Returns single user by their id
     pub async fn user(&self, user_id: UserId) -> Option<User> {
         self.users.read().await.get(&user_id.0).map(|data| User {
@@ -85,7 +84,7 @@ impl Users {
     }
 
     /// Create a new user returning created user id.
-    pub async fn create_user(&self, nickname: String) -> UserId {
+    pub async fn create(&self, nickname: String) -> UserId {
         let mut users = self.users.write().await;
         loop {
             let user_id = Uuid::new_v4();
@@ -98,8 +97,10 @@ impl Users {
     }
 }
 
-impl Default for Users {
-    fn default() -> Self {
-        Self::new()
+impl juniper::Context for Users {}
+
+impl FromContext<Context> for Users {
+    fn from(context: &Context) -> &Self {
+        context.users()
     }
 }

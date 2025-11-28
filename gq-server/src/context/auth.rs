@@ -66,10 +66,7 @@ impl UserToken {
 
         let secret_base64 = BASE64_STANDARD.encode(secret.as_bytes());
 
-        let data = format!(
-            "{USER_TOKEN_APP_SECRET}.{user_id}.{secret_base64}.{token}",
-            user_id = user_id.id()
-        );
+        let data = format!("{USER_TOKEN_APP_SECRET}.{user_id}.{secret_base64}.{token}");
 
         let mut hasher = Sha3_256::new();
         hasher.update(data.as_bytes());
@@ -87,7 +84,7 @@ impl UserToken {
     /// Verifies the user token returning user id if verification is successfull
     fn verify(&self, token: &str) -> Result<UserId> {
         let secret = BASE64_STANDARD.encode(self.secret.as_bytes());
-        let user_id = self.user_id.id();
+        let user_id = self.user_id;
 
         let data = format!("{USER_TOKEN_APP_SECRET}.{user_id}.{secret}.{token}");
 
@@ -96,7 +93,7 @@ impl UserToken {
         let signature: [u8; _] = hasher.finalize().into();
 
         ensure!(signature == self.signature, "Token signature doesn't match");
-        Ok(self.user_id)
+        Ok(user_id)
     }
 }
 

@@ -70,7 +70,11 @@ async fn main() -> Result<()> {
 
     // Defining routes
     let context = Context::new();
-    let schema = RootNode::new(Query, Mutation, EmptySubscription::<Context>::new());
+    let schema = RootNode::new(
+        Query::new(),
+        Mutation::new(),
+        EmptySubscription::<Context>::new(),
+    );
 
     let api = {
         let context = context.clone();
