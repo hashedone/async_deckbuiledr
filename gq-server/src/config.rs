@@ -6,16 +6,11 @@ use serde::{Deserialize, Deserializer};
 use tracing_subscriber::filter::Directive;
 
 /// Logging output format
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
 pub enum LogFormat {
+    #[default]
     Compact,
     Pretty,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        Self::Compact
-    }
 }
 
 /// Logging configuration
