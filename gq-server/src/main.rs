@@ -51,6 +51,18 @@ struct PlaygroundDisabled;
 
 impl warp::reject::Reject for PlaygroundDisabled {}
 
+/// Root GraphQL schema
+type Schema = RootNode<Query, Mutation, EmptySubscription<Context>>;
+
+/// Builds the schema
+fn schema() -> Schema {
+    RootNode::new(
+        Query::new(),
+        Mutation::new(),
+        EmptySubscription::<Context>::new(),
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let Opt {
@@ -68,16 +80,9 @@ async fn main() -> Result<()> {
         "Tracing initialized, setting up a service"
     );
 
-    // Defining routes
-    let context = Context::new();
-    let schema = RootNode::new(
-        Query::new(),
-        Mutation::new(),
-        EmptySubscription::<Context>::new(),
-    );
-
     let api = {
-        let context = context.clone();
+        let context = Context::new();
+        let schema = schema();
 
         warp::post()
             .and(warp::path("api"))
