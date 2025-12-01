@@ -1,19 +1,45 @@
 //! Authoriazation data
 
 use std::collections::{HashMap, hash_map};
+use std::time::Duration;
 
 use base64::prelude::*;
 use color_eyre::Result;
-use color_eyre::eyre::{OptionExt, ensure, eyre};
+use color_eyre::eyre::{OptionExt, ensure};
+use pasetors::claims::{Claims, ClaimsValidationRules};
+use pasetors::footer::Footer;
+use pasetors::keys::{AsymmetricKeyPair, AsymmetricPublicKey, Generate};
+use pasetors::paserk::{self, FormatAsPaserk};
+use pasetors::token::UntrustedToken;
+use pasetors::version4::V4;
+use pasetors::{Public, public};
 use sha3::{Digest, Sha3_256};
+use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::context::users::UserId;
 
+#[derive(Debug, Error)]
+enum Error {
+    #[error("Invalid token format")]
+    InvalidTokenFormat,
+    #[error("Token doesn't exist")]
+    NonExistingToken,
+    #[error("Missing user id on a token")]
+    MissingUserId,
+    #[error("Missing token id on a token")]
+    MissingTokenId,
+    #[error("Missing session data")]
+    MissingClaims,
+}
+
 /// Secret used as key for signing user tokens. For now it is a silly constant for testing
 /// purposes, but it should be a secret fed from environment variable during the build.
 const USER_TOKEN_APP_SECRET: &str = "AsyncDeckbuilderAppTokenSecret";
+
+/// PASETO implicit assertion for session tokens
+const SESSION_APP_SECRET: &[u8] = b"AsyncDeckbuilderAppSessionTokenSecret";
 
 /// The short-living user token
 ///
@@ -97,9 +123,39 @@ impl UserToken {
     }
 }
 
+/// Session data atached to Paseto session token
+///
+/// Session token is what actually gives access to any priviledges - any authorization method is
+/// there only to obdain the session token.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionData {
+    /// User authorized by this token
+    pub user_id: UserId,
+}
+
+impl SessionData {
+    //// Appends data to the session claims
+    fn append(self, mut claims: Claims) -> Result<Claims> {
+        claims.issuer(&self.user_id.to_string())?;
+        Ok(claims)
+    }
+
+    /// Builds session data from token claims
+    fn from_claims(claims: &Claims) -> Result<Self> {
+        let user_id = claims.get_claim("iss").ok_or_eyre(Error::MissingUserId)?;
+
+        Ok(SessionData {
+            user_id: user_id.as_str().ok_or_eyre(Error::MissingUserId)?.parse()?,
+        })
+    }
+}
+
 pub struct Auth {
     /// User tokens map
     user_tokens: RwLock<HashMap<Uuid, UserToken>>,
+
+    /// Pasetors public keys used for session verification
+    session_keys: RwLock<HashMap<String, String>>,
 }
 
 impl Auth {
@@ -107,6 +163,7 @@ impl Auth {
     pub fn new() -> Self {
         Self {
             user_tokens: RwLock::new(HashMap::new()),
+            session_keys: RwLock::new(HashMap::new()),
         }
     }
 
@@ -128,23 +185,79 @@ impl Auth {
         format!("{token_id}.{token}")
     }
 
+    /// Creates new paseko session token for an user
+    pub async fn create_session_token(&self, user_id: UserId) -> Result<String> {
+        let key_pair = AsymmetricKeyPair::<V4>::generate()?;
+        let key_id = paserk::Id::from(&key_pair.public);
+        {
+            // For paseko session tokens we ignore any possibility of key collilsion - it is
+            // extremply unlikely, and if it happens the worse result is that someones else session
+            // expires.
+            let mut kid = String::new();
+            key_id.fmt(&mut kid)?;
+
+            let mut pk = String::new();
+            key_pair.public.fmt(&mut pk)?;
+            self.session_keys.write().await.insert(kid, pk);
+        }
+
+        let session = SessionData { user_id };
+
+        let claims = Claims::new_expires_in(&Duration::from_hours(24)).unwrap();
+        let claims = session.append(claims)?;
+
+        let mut footer = Footer::new();
+        footer.key_id(&key_id);
+
+        let token = public::sign(
+            &key_pair.secret,
+            &claims,
+            Some(&footer),
+            Some(SESSION_APP_SECRET),
+        )?;
+
+        Ok(token)
+    }
+
     /// Verifies an user token and returns the authorized user id on success
     pub async fn verify_user_token(&self, token: &str) -> Result<UserId> {
         let (token_id, token) = token
             .split_once('.')
-            .ok_or_eyre("Invalid user token format")?;
+            .ok_or_eyre(Error::InvalidTokenFormat)?;
 
         let token_id: [u8; 16] = base64::prelude::BASE64_STANDARD
             .decode(token_id)?
             .try_into()
-            .map_err(|_| eyre!("Invalid token_id format"))?;
+            .map_err(|_| Error::InvalidTokenFormat)?;
         let token_id = Uuid::from_bytes(token_id);
 
         let tokens = self.user_tokens.read().await;
-        let user_token = tokens.get(&token_id).ok_or_eyre("Token doesn't exist")?;
+        let user_token = tokens.get(&token_id).ok_or_eyre(Error::NonExistingToken)?;
 
         let user_id = user_token.verify(token)?;
         Ok(user_id)
+    }
+
+    pub async fn verify_session_token(&self, token: &str) -> Result<SessionData> {
+        let token = UntrustedToken::<Public, V4>::try_from(token)?;
+        let mut footer = Footer::new();
+        footer.parse_bytes(token.untrusted_footer())?;
+
+        let key_id = footer
+            .get_claim("kid")
+            .ok_or_eyre(Error::MissingTokenId)?
+            .as_str()
+            .ok_or_eyre(Error::MissingTokenId)?;
+
+        let keys = self.session_keys.read().await;
+        let key = keys.get(key_id).ok_or_eyre(Error::NonExistingToken)?;
+        let key = AsymmetricPublicKey::<V4>::try_from(key.as_str())?;
+
+        let rules = ClaimsValidationRules::new();
+        let token = public::verify(&key, &token, &rules, None, Some(SESSION_APP_SECRET))?;
+
+        let claims = token.payload_claims().ok_or_eyre(Error::MissingClaims)?;
+        SessionData::from_claims(claims)
     }
 }
 
@@ -160,51 +273,97 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn verify_with_generated_token() {
-        let auth = Auth::default();
-        let users = Users::default();
+    mod user_token {
+        use super::*;
 
-        let user1 = users.create("user1").await;
-        let token1 = auth.create_user_token(user1).await;
-        let authorized_user = auth.verify_user_token(&token1).await.unwrap();
+        #[tokio::test]
+        async fn verify_with_generated_token() {
+            let auth = Auth::default();
+            let users = Users::default();
 
-        assert_eq!(user1, authorized_user);
+            let user1 = users.create("user1").await;
+            let token1 = auth.create_user_token(user1).await;
+            let authorized_user = auth.verify_user_token(&token1).await.unwrap();
 
-        // Checking if everything works when another users are added
-        let user2 = users.create("user2").await;
-        let token2 = auth.create_user_token(user2).await;
-        // Also multiple tokens for single user;
-        let token3 = auth.create_user_token(user2).await;
+            assert_eq!(user1, authorized_user);
 
-        let user4 = users.create("user1").await;
-        let token4 = auth.create_user_token(user4).await;
+            // Checking if everything works when another users are added
+            let user2 = users.create("user2").await;
+            let token2 = auth.create_user_token(user2).await;
+            // Also multiple tokens for single user;
+            let token3 = auth.create_user_token(user2).await;
 
-        let authorized_user = auth.verify_user_token(&token1).await.unwrap();
-        assert_eq!(user1, authorized_user);
+            let user4 = users.create("user1").await;
+            let token4 = auth.create_user_token(user4).await;
 
-        let authorized_user = auth.verify_user_token(&token2).await.unwrap();
-        assert_eq!(user2, authorized_user);
+            let authorized_user = auth.verify_user_token(&token1).await.unwrap();
+            assert_eq!(user1, authorized_user);
 
-        let authorized_user = auth.verify_user_token(&token3).await.unwrap();
-        assert_eq!(user2, authorized_user);
+            let authorized_user = auth.verify_user_token(&token2).await.unwrap();
+            assert_eq!(user2, authorized_user);
 
-        let authorized_user = auth.verify_user_token(&token4).await.unwrap();
-        assert_eq!(user4, authorized_user);
+            let authorized_user = auth.verify_user_token(&token3).await.unwrap();
+            assert_eq!(user2, authorized_user);
+
+            let authorized_user = auth.verify_user_token(&token4).await.unwrap();
+            assert_eq!(user4, authorized_user);
+        }
+
+        #[tokio::test]
+        async fn verify_with_random_data_fails() {
+            let auth = Auth::default();
+            let _ = auth.verify_user_token("fake_token").await.unwrap_err();
+        }
+
+        #[tokio::test]
+        async fn verify_with_invalid_key_fails() {
+            let auth = Auth::default();
+            let _ = auth
+                .verify_user_token("U7PydAY1TsKmmVGf4LS3YA==.PUGKx45wSK+0rhl4F2TDdg==")
+                .await
+                .unwrap_err();
+        }
     }
 
-    #[tokio::test]
-    async fn verify_with_random_data_fails() {
-        let auth = Auth::default();
-        let _ = auth.verify_user_token("fake_token").await.unwrap_err();
-    }
+    mod session_token {
+        use super::*;
 
-    #[tokio::test]
-    async fn verify_with_invalid_key_fails() {
-        let auth = Auth::default();
-        let _ = auth
-            .verify_user_token("U7PydAY1TsKmmVGf4LS3YA==.PUGKx45wSK+0rhl4F2TDdg==")
-            .await
-            .unwrap_err();
+        #[tokio::test]
+        async fn verify_with_generated_token() {
+            let auth = Auth::default();
+            let users = Users::default();
+
+            let user1 = users.create("user1").await;
+            let token1 = auth.create_session_token(user1).await.unwrap();
+
+            let session = auth.verify_session_token(&token1).await.unwrap();
+            assert_eq!(SessionData { user_id: user1 }, session);
+
+            let user2 = users.create("user2").await;
+            let token2 = auth.create_session_token(user2).await.unwrap();
+            // Also multiple tokens for single user;
+            let token3 = auth.create_session_token(user2).await.unwrap();
+
+            let user4 = users.create("user1").await;
+            let token4 = auth.create_session_token(user4).await.unwrap();
+
+            let session = auth.verify_session_token(&token1).await.unwrap();
+            assert_eq!(SessionData { user_id: user1 }, session);
+
+            let session = auth.verify_session_token(&token2).await.unwrap();
+            assert_eq!(SessionData { user_id: user2 }, session);
+
+            let session = auth.verify_session_token(&token3).await.unwrap();
+            assert_eq!(SessionData { user_id: user2 }, session);
+
+            let session = auth.verify_session_token(&token4).await.unwrap();
+            assert_eq!(SessionData { user_id: user4 }, session);
+        }
+
+        #[tokio::test]
+        async fn verify_with_random_data_fails() {
+            let auth = Auth::default();
+            let _ = auth.verify_session_token("fake_token").await.unwrap_err();
+        }
     }
 }

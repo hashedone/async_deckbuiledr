@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 tracing.workspace = true
 derivative.workspace = true
+thiserror.workspace = true
 
 color-eyre = "0.6.5"
 juniper = "0.17.0"
@@ -16,11 +17,12 @@ tracing-error = "0.2.1"
 juniper_warp = "0.9.0"
 toml = { version = "0.9.8", features = ["parse"] }
 serde = { version = "1.0.228", features = ["derive"] }
-uuid = { version = "1.18.1", features = ["v4"] }
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
 base64 = "0.22.1"
 sha3 = "0.10.8"
 clap = { version = "4.5.53", features = ["derive"] }
 clio = { version = "0.3.5", features = ["clap-parse"] }
+pasetors = "0.7.7"
 
 [dev-dependencies]
 warp = { version = "0.4.2", features = ["test"] }
