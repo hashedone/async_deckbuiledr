@@ -1,16 +1,16 @@
 //! User-related mutations
 
-use juniper::{GraphQLObject, graphql_object};
+use async_graphql::{Context, Object, Result, SimpleObject};
+use tracing::{info, instrument};
 
-use crate::context::Context;
-use crate::context::users::{UserId, Users as UsersContext};
+use crate::context::users::User;
+use crate::context::{Auth, Users};
 
 /// Type returned when the AD-hoc user is created
-#[derive(Debug, Clone, GraphQLObject)]
-#[graphql(context = UsersContext)]
+#[derive(Debug, Clone, SimpleObject)]
 struct CreatedAdHocUser {
-    /// Created user id
-    user: UserId,
+    /// Created user info
+    user: User,
     /// Authorization token for this user
     token: String,
 }
@@ -18,20 +18,30 @@ struct CreatedAdHocUser {
 #[derive(Debug, Default)]
 pub struct UsersMutations;
 
-#[graphql_object]
+#[Object]
 impl UsersMutations {
     /// Creates a short living user authorized with a token. Returns user authorization token.
     ///
     /// Ad hoc users are users that are cannot grant any priviliges - they are created ad hoc, when
     /// the basic user authentication is needed. The ad hoc user can be removed if not assigned to
     /// anything.
-    async fn create_adhoc(nickname: String, context: &Context) -> CreatedAdHocUser {
-        let user_id = context.users().create(nickname).await;
-        let token = context.auth().create_user_token(user_id).await;
+    #[instrument(skip(self, context))]
+    async fn create_adhoc<'c>(
+        &self,
+        context: &Context<'c>,
+        nickname: String,
+    ) -> Result<CreatedAdHocUser> {
+        let users: &Users = context.data()?;
+        let user_id = users.create(&nickname).await;
 
-        CreatedAdHocUser {
-            user: user_id,
+        let auth: &Auth = context.data()?;
+        let token = auth.create_user_token(user_id).await;
+
+        info!(%user_id, nickname, "Created ad-hoc user");
+
+        Ok(CreatedAdHocUser {
+            user: User { nickname },
             token,
-        }
+        })
     }
 }

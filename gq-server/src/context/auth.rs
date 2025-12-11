@@ -1,11 +1,13 @@
 //! Authoriazation data
 
 use std::collections::{HashMap, hash_map};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::prelude::*;
 use color_eyre::Result;
 use color_eyre::eyre::{OptionExt, ensure};
+use derivative::Derivative;
 use pasetors::claims::{Claims, ClaimsValidationRules};
 use pasetors::footer::Footer;
 use pasetors::keys::{AsymmetricKeyPair, AsymmetricPublicKey, Generate};
@@ -150,7 +152,9 @@ impl SessionData {
     }
 }
 
-pub struct Auth {
+#[derive(Derivative)]
+#[derivative(Default = "new")]
+struct AuthInner {
     /// User tokens map
     user_tokens: RwLock<HashMap<Uuid, UserToken>>,
 
@@ -158,18 +162,14 @@ pub struct Auth {
     session_keys: RwLock<HashMap<String, String>>,
 }
 
-impl Auth {
-    /// Creates new authorization storage
-    pub fn new() -> Self {
-        Self {
-            user_tokens: RwLock::new(HashMap::new()),
-            session_keys: RwLock::new(HashMap::new()),
-        }
-    }
+#[derive(Derivative, Clone)]
+#[derivative(Default = "new")]
+pub struct Auth(Arc<AuthInner>);
 
+impl Auth {
     /// Creates new authorization token for an user
     pub async fn create_user_token(&self, user_id: UserId) -> String {
-        let mut tokens = self.user_tokens.write().await;
+        let mut tokens = self.0.user_tokens.write().await;
         let (token_entry, token_id) = loop {
             let token_id = Uuid::new_v4();
             let entry = tokens.entry(token_id);
@@ -198,7 +198,7 @@ impl Auth {
 
             let mut pk = String::new();
             key_pair.public.fmt(&mut pk)?;
-            self.session_keys.write().await.insert(kid, pk);
+            self.0.session_keys.write().await.insert(kid, pk);
         }
 
         let session = SessionData { user_id };
@@ -231,7 +231,7 @@ impl Auth {
             .map_err(|_| Error::InvalidTokenFormat)?;
         let token_id = Uuid::from_bytes(token_id);
 
-        let tokens = self.user_tokens.read().await;
+        let tokens = self.0.user_tokens.read().await;
         let user_token = tokens.get(&token_id).ok_or_eyre(Error::NonExistingToken)?;
 
         let user_id = user_token.verify(token)?;
@@ -249,7 +249,7 @@ impl Auth {
             .as_str()
             .ok_or_eyre(Error::MissingTokenId)?;
 
-        let keys = self.session_keys.read().await;
+        let keys = self.0.session_keys.read().await;
         let key = keys.get(key_id).ok_or_eyre(Error::NonExistingToken)?;
         let key = AsymmetricPublicKey::<V4>::try_from(key.as_str())?;
 
@@ -258,12 +258,6 @@ impl Auth {
 
         let claims = token.payload_claims().ok_or_eyre(Error::MissingClaims)?;
         SessionData::from_claims(claims)
-    }
-}
-
-impl Default for Auth {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

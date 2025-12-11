@@ -1,10 +1,11 @@
 //! GraphQL async deckbuilder interface
 
+use actix_web::{App, HttpServer};
 use clap::Parser;
 use color_eyre::Result;
 use std::io::read_to_string;
 use tracing::info;
-use warp::Filter;
+use tracing_actix_web::TracingLogger;
 
 use crate::config::{Config, LogFormat};
 use crate::opt::Opt;
@@ -60,24 +61,15 @@ async fn main() -> Result<()> {
         "Tracing initialized, setting up a service"
     );
 
-    let api = service::api_traced();
-    let playground = if config.graphiql {
-        Some(service::playground_traced())
-    } else {
-        None
-    };
-
-    info!(
-        addr = ?config.host,
-        "Service configured, serving"
-    );
-
-    if let Some(pg) = playground {
-        let routes = api.or(pg);
-        warp::serve(routes).run(config.host).await;
-    } else {
-        warp::serve(api).run(config.host).await;
-    }
+    let graphiql_enabled = config.graphiql;
+    HttpServer::new(move || {
+        App::new()
+            .wrap(TracingLogger::default())
+            .configure(service::configure(graphiql_enabled))
+    })
+    .bind(config.host)?
+    .run()
+    .await?;
 
     info!("Service stopped, tearing down");
     Ok(())

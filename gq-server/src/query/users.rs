@@ -1,28 +1,13 @@
 //! User-related queries
 
-use juniper::{FieldResult, graphql_object};
-
-use crate::context::Users as UsersContext;
-use crate::context::users::UserId;
+use async_graphql::Object;
 
 #[derive(Debug, Default)]
 pub struct UsersQueries;
 
-#[graphql_object]
+#[Object]
 impl UsersQueries {
-    /// Queries for all user ids
-    async fn all(context: &UsersContext) -> Vec<UserId> {
-        context
-            .users()
-            .await
-            .keys()
-            .copied()
-            .map(UserId::new)
-            .collect()
-    }
-
-    /// Builds user id for further queries
-    fn id(user_id: String) -> FieldResult<UserId> {
-        user_id.parse().map_err(Into::into)
+    async fn dummy(&self) -> &str {
+        "Dummy"
     }
 }

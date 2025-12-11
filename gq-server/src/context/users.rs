@@ -3,41 +3,41 @@
 use std::collections::{HashMap, hash_map};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
+use async_graphql::connection::CursorType;
+use async_graphql::{Result, SimpleObject};
 use base64::prelude::*;
-use color_eyre::Report;
-use color_eyre::eyre::eyre;
 use derivative::Derivative;
-use juniper::{FromContext, GraphQLObject, graphql_object};
+use thiserror::Error;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
-use crate::context::Context;
+#[derive(Debug, Clone, Error)]
+pub enum Error {
+    #[error("Invalid user id format")]
+    InvalidUserId,
+}
 
 /// User id
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UserId(Uuid);
 
-#[graphql_object]
 impl UserId {
-    #[graphql(ignore)]
     pub fn new(uuid: Uuid) -> Self {
         Self(uuid)
-    }
-
-    async fn user(&self, context: &Users) -> Option<User> {
-        context.user(*self).await
     }
 }
 
 impl FromStr for UserId {
-    type Err = Report;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes: [u8; 16] = BASE64_STANDARD
-            .decode(s)?
+            .decode(s)
+            .map_err(|_| Error::InvalidUserId)?
             .try_into()
-            .map_err(|_| eyre!("Invalid user id format"))?;
+            .map_err(|_| Error::InvalidUserId)?;
 
         Ok(Self(Uuid::from_bytes(bytes)))
     }
@@ -49,37 +49,53 @@ impl fmt::Display for UserId {
     }
 }
 
+impl CursorType for UserId {
+    type Error = <Self as FromStr>::Err;
+
+    fn decode_cursor(s: &str) -> std::result::Result<Self, Self::Error> {
+        s.parse()
+    }
+
+    fn encode_cursor(&self) -> String {
+        self.to_string()
+    }
+}
+
 /// User queryable data
-#[derive(Debug, Clone, PartialEq, GraphQLObject)]
+#[derive(Debug, Clone, PartialEq, SimpleObject)]
 pub struct User {
     /// How user is visible to others.
     pub nickname: String,
 }
-//
+
 // Users storage.
 #[derive(Derivative)]
 #[derivative(Default(new = "true"))]
-pub struct Users {
+struct UsersInner {
     /// Users map
     users: RwLock<HashMap<Uuid, User>>,
 }
 
+#[derive(Derivative, Clone)]
+#[derivative(Default(new = "true"))]
+pub struct Users(Arc<UsersInner>);
+
 impl Users {
     /// Returns single user by their id
     pub async fn user(&self, user_id: UserId) -> Option<User> {
-        self.users.read().await.get(&user_id.0).cloned()
+        self.0.users.read().await.get(&user_id.0).cloned()
     }
 
     /// Returns users hashmap locked for read.
     pub async fn users(&self) -> RwLockReadGuard<'_, HashMap<Uuid, User>> {
-        self.users.read().await
+        self.0.users.read().await
     }
 
     /// Create a new user returning created user id.
     pub async fn create(&self, nickname: impl Into<String>) -> UserId {
         let nickname = nickname.into();
 
-        let mut users = self.users.write().await;
+        let mut users = self.0.users.write().await;
         loop {
             let user_id = Uuid::new_v4();
             let entry = users.entry(user_id);
@@ -88,14 +104,6 @@ impl Users {
                 return UserId(user_id);
             }
         }
-    }
-}
-
-impl juniper::Context for Users {}
-
-impl FromContext<Context> for Users {
-    fn from(context: &Context) -> &Self {
-        context.users()
     }
 }
 

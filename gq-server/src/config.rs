@@ -17,10 +17,11 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Logging {
     /// Additional filtering directives
-    #[serde(deserialize_with = "Logging::deserialize_filters")]
+    #[serde(default, deserialize_with = "Logging::deserialize_filters")]
     pub filters: Vec<Directive>,
 
     /// Logging format
+    #[serde(default)]
     pub format: LogFormat,
 }
 

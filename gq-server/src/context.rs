@@ -3,43 +3,28 @@
 pub mod auth;
 pub mod users;
 
-use auth::Auth;
-use std::sync::Arc;
+use async_graphql::EmptySubscription;
+pub use auth::Auth;
+use derivative::Derivative;
 pub use users::Users;
 
-struct ContextInner {
-    /// Users manager
-    users: Users,
-    /// Authorisation manager
+use crate::mutation::Mutation;
+use crate::query::Query;
+use crate::service::Schema;
+
+#[derive(Derivative, Clone)]
+#[derivative(Default = "new")]
+pub struct Context {
     auth: Auth,
+    users: Users,
 }
 
-#[derive(Clone)]
-pub struct Context(Arc<ContextInner>);
-
+/// Builds the schema with context included
 impl Context {
-    pub fn new() -> Context {
-        Self(Arc::new(ContextInner {
-            users: Users::new(),
-            auth: Auth::new(),
-        }))
-    }
-
-    /// Access to `Users`
-    pub fn users(&self) -> &Users {
-        &self.0.users
-    }
-
-    /// Access to auth
-    pub fn auth(&self) -> &Auth {
-        &self.0.auth
-    }
-}
-
-impl juniper::Context for Context {}
-
-impl Default for Context {
-    fn default() -> Self {
-        Self::new()
+    pub fn schema(&self) -> Schema {
+        Schema::build(Query::new(), Mutation::new(), EmptySubscription)
+            .data(self.users.clone())
+            .data(self.auth.clone())
+            .finish()
     }
 }

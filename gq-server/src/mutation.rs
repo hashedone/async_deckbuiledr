@@ -1,15 +1,12 @@
 //! Mutations main entry point
-//!
+
+use async_graphql::SimpleObject;
 use derivative::Derivative;
-use juniper::GraphQLObject;
 
 mod users;
 
-use crate::context::Context;
-
-#[derive(Debug, GraphQLObject, Derivative)]
-#[derivative(Default(new = "true"))]
-#[graphql(context = Context)]
+#[derive(Debug, Derivative, SimpleObject)]
+#[derivative(Default = "new")]
 pub struct Mutation {
     users: users::UsersMutations,
 }

@@ -1,14 +1,20 @@
 //! Main query entry point
-use derivative::Derivative;
-use juniper::GraphQLObject;
 
-use crate::context::Context;
+use async_graphql::Object;
+use derivative::Derivative;
+
 mod users;
 
-#[derive(Debug, GraphQLObject, Derivative)]
-#[derivative(Default(new = "true"))]
-#[graphql(context = Context)]
+#[derive(Debug, Derivative)]
+#[derivative(Default = "new")]
 pub struct Query {
     /// User related queries
     users: users::UsersQueries,
+}
+
+#[Object]
+impl Query {
+    async fn users(&self) -> &users::UsersQueries {
+        &self.users
+    }
 }

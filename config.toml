@@ -1,1 +1,4 @@
 graphiql = true
+
+[logging]
+format = "Pretty"
