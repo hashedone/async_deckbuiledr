@@ -8,6 +8,7 @@ use tracing::info;
 use tracing_actix_web::TracingLogger;
 
 use crate::config::{Config, LogFormat};
+use crate::context::Context;
 use crate::opt::Opt;
 
 mod config;
@@ -62,10 +63,12 @@ async fn main() -> Result<()> {
     );
 
     let graphiql_enabled = config.graphiql;
+    let context = Context::with_config(config.db).await?;
+    let service_config = service::configure(graphiql_enabled, context).await?;
     HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .configure(service::configure(graphiql_enabled))
+            .configure(service_config.clone())
     })
     .bind(config.host)?
     .run()

@@ -1,5 +1,6 @@
 //! Services integration tests
 
+use color_eyre::{Result, eyre::bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, from_value};
@@ -26,20 +27,20 @@ struct GraphQLResp {
 
 impl GraphQLResp {
     /// Returns the deserialized data part at given json path
-    #[track_caller]
-    fn data<T: DeserializeOwned>(&self, path: &str) -> T {
-        let data = path.split('.').fold(&self.data, |data, key| {
+    fn data<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let data = path.split('.').fold(Ok(&self.data), |data, key| {
+            let data = data?;
             let Value::Object(fields) = data else {
-                panic!("{path} is not a valid path in {:?}", self.data);
+                bail!("{path} is not a valid path in {:?}", self.data);
             };
 
             let Some(data) = fields.get(key) else {
-                panic!("{path} is not a valid path in {:?}", self.data);
+                bail!("{path} is not a valid path in {:?}", self.data);
             };
 
-            data
-        });
+            Ok(data)
+        })?;
 
-        from_value(data.clone()).unwrap()
+        from_value(data.clone()).map_err(Into::into)
     }
 }

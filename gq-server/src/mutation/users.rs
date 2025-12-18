@@ -1,10 +1,10 @@
 //! User-related mutations
 
-use async_graphql::{Context, Object, Result, SimpleObject};
+use async_graphql::{Object, Result, SimpleObject};
 use tracing::{info, instrument};
 
+use crate::context::Context;
 use crate::context::users::User;
-use crate::context::{Auth, Users};
 
 /// Type returned when the AD-hoc user is created
 #[derive(Debug, Clone, SimpleObject)]
@@ -28,14 +28,15 @@ impl UsersMutations {
     #[instrument(skip(self, context))]
     async fn create_adhoc<'c>(
         &self,
-        context: &Context<'c>,
+        context: &async_graphql::Context<'c>,
         nickname: String,
     ) -> Result<CreatedAdHocUser> {
-        let users: &Users = context.data()?;
-        let user_id = users.create(&nickname).await;
+        let context: &Context = context.data()?;
+        let users = context.users();
+        let user_id = users.create(&nickname).await?;
 
-        let auth: &Auth = context.data()?;
-        let token = auth.create_user_token(user_id).await;
+        let auth = context.auth();
+        let token = auth.create_user_token(user_id).await?;
 
         info!(%user_id, nickname, "Created ad-hoc user");
 

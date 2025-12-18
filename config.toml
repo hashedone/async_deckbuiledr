@@ -2,3 +2,7 @@ graphiql = true
 
 [logging]
 format = "Pretty"
+
+[db.SqLite]
+path = "data.sqlite"
+migrate = true

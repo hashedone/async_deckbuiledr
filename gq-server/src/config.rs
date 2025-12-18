@@ -1,6 +1,7 @@
 //! Service configuration
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer};
 use tracing_subscriber::filter::Directive;
@@ -37,6 +38,45 @@ impl Logging {
     }
 }
 
+/// Database configuration
+#[derive(Debug, Clone, Deserialize)]
+pub enum Database {
+    /// In-memory SQLite database
+    Memory {
+        /// Max number of concurrent connections to the DB
+        #[serde(default = "Database::default_max_connections")]
+        max_connections: u32,
+    },
+    /// FS SQLite database
+    SqLite {
+        /// Database file path
+        path: PathBuf,
+        /// Max number of concurrent connections to the DB
+        #[serde(default = "Database::default_max_connections")]
+        max_connections: u32,
+        /// If true, the migrations will be executing when creating the pool. Not advised for production use,
+        /// but can be helpful for testing/development.
+        #[serde(default)]
+        migrate: bool,
+    },
+}
+
+impl Default for Database {
+    fn default() -> Self {
+        Self::SqLite {
+            path: "dbgq/data/db.sqlite".to_owned().into(),
+            max_connections: Database::default_max_connections(),
+            migrate: false,
+        }
+    }
+}
+
+impl Database {
+    fn default_max_connections() -> u32 {
+        5
+    }
+}
+
 /// Top level service configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -51,6 +91,10 @@ pub struct Config {
     /// Logging configuration
     #[serde(default)]
     pub logging: Logging,
+
+    /// Database configuration
+    #[serde(default)]
+    pub db: Database,
 }
 
 impl Config {

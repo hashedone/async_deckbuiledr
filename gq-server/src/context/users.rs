@@ -1,64 +1,13 @@
 //! Serivce users storage
 
-use std::collections::{HashMap, hash_map};
-use std::fmt;
-use std::str::FromStr;
-use std::sync::Arc;
-
-use async_graphql::connection::CursorType;
 use async_graphql::{Result, SimpleObject};
-use base64::prelude::*;
-use derivative::Derivative;
+use sqlx::Executor;
 use thiserror::Error;
-use tokio::sync::{RwLock, RwLockReadGuard};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Error)]
 pub enum Error {
     #[error("Invalid user id format")]
     InvalidUserId,
-}
-
-/// User id
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UserId(Uuid);
-
-impl UserId {
-    pub fn new(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-}
-
-impl FromStr for UserId {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes: [u8; 16] = BASE64_STANDARD
-            .decode(s)
-            .map_err(|_| Error::InvalidUserId)?
-            .try_into()
-            .map_err(|_| Error::InvalidUserId)?;
-
-        Ok(Self(Uuid::from_bytes(bytes)))
-    }
-}
-
-impl fmt::Display for UserId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", BASE64_STANDARD.encode(self.0.as_bytes()))
-    }
-}
-
-impl CursorType for UserId {
-    type Error = <Self as FromStr>::Err;
-
-    fn decode_cursor(s: &str) -> std::result::Result<Self, Self::Error> {
-        s.parse()
-    }
-
-    fn encode_cursor(&self) -> String {
-        self.to_string()
-    }
 }
 
 /// User queryable data
@@ -68,113 +17,105 @@ pub struct User {
     pub nickname: String,
 }
 
-// Users storage.
-#[derive(Derivative)]
-#[derivative(Default(new = "true"))]
-struct UsersInner {
-    /// Users map
-    users: RwLock<HashMap<Uuid, User>>,
+// Users access
+pub struct Users<'a, Db> {
+    /// Database connection
+    db: &'a Db,
 }
 
-#[derive(Derivative, Clone)]
-#[derivative(Default(new = "true"))]
-pub struct Users(Arc<UsersInner>);
-
-impl Users {
-    /// Returns single user by their id
-    pub async fn user(&self, user_id: UserId) -> Option<User> {
-        self.0.users.read().await.get(&user_id.0).cloned()
+impl<'a, Db> Users<'a, Db> {
+    /// Creates new users accessor
+    pub(super) fn new(db: &'a Db) -> Self {
+        Self { db }
     }
+}
 
-    /// Returns users hashmap locked for read.
-    pub async fn users(&self) -> RwLockReadGuard<'_, HashMap<Uuid, User>> {
-        self.0.users.read().await
+impl<'a, Db> Users<'a, Db>
+where
+    &'a Db: Executor<'a, Database = sqlx::Sqlite>,
+{
+    /// Returns single user by their id
+    pub async fn user(&self, user_id: i64) -> Result<Option<User>> {
+        let row: Option<(String,)> = sqlx::query_as("select nickname from users where id = ?")
+            .bind(user_id)
+            .fetch_optional(self.db)
+            .await?;
+
+        Ok(row.map(|(nickname,)| User { nickname }))
     }
 
     /// Create a new user returning created user id.
-    pub async fn create(&self, nickname: impl Into<String>) -> UserId {
+    pub async fn create(&self, nickname: impl Into<String>) -> Result<i64> {
         let nickname = nickname.into();
+        let result = sqlx::query("insert into users(nickname) values (?)")
+            .bind(nickname)
+            .execute(self.db)
+            .await?;
 
-        let mut users = self.0.users.write().await;
-        loop {
-            let user_id = Uuid::new_v4();
-            let entry = users.entry(user_id);
-            if let hash_map::Entry::Vacant(entry) = entry {
-                entry.insert(User { nickname });
-                return UserId(user_id);
-            }
-        }
+        Ok(result.last_insert_rowid())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::SqlitePool;
+
+    const USERS_MIGRATION: &str = include_str!("../../model/migrations/0_users.sql");
+
+    async fn setup_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(USERS_MIGRATION).execute(&pool).await.unwrap();
+        pool
+    }
 
     #[tokio::test]
     async fn users_empty_initially() {
-        let users = Users::default();
+        let pool = setup_pool().await;
 
-        assert!(users.users().await.is_empty())
+        let (count,): (i64,) = sqlx::query_as("select count(*) from users")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]
     async fn creating_users() {
-        let users = Users::default();
+        let pool = setup_pool().await;
+        let users = Users::new(&pool);
 
-        let user1 = users.create("user1").await;
-        {
-            let users = users.users().await;
-            assert_eq!(users.len(), 1);
-            assert_eq!(
-                &User {
-                    nickname: "user1".to_owned()
-                },
-                users.get(&user1.0).unwrap()
-            );
-        }
+        let user1 = users.create("user1").await.unwrap();
+        assert_eq!(
+            users.user(user1).await.unwrap().unwrap(),
+            User {
+                nickname: "user1".to_owned()
+            }
+        );
 
-        let user2 = users.create("user2").await;
-        {
-            let users = users.users().await;
-            assert_eq!(users.len(), 2);
-            assert_eq!(
-                &User {
-                    nickname: "user1".to_owned()
-                },
-                users.get(&user1.0).unwrap()
-            );
-            assert_eq!(
-                &User {
-                    nickname: "user2".to_owned()
-                },
-                users.get(&user2.0).unwrap()
-            );
-        }
+        let user2 = users.create("user2").await.unwrap();
+        assert_ne!(user1, user2);
+        assert_eq!(
+            users.user(user2).await.unwrap().unwrap(),
+            User {
+                nickname: "user2".to_owned()
+            }
+        );
 
         // Username *can* collide
-        let user3 = users.create("user1").await;
-        {
-            let users = users.users().await;
-            assert_eq!(users.len(), 3);
-            assert_eq!(
-                &User {
-                    nickname: "user1".to_owned()
-                },
-                users.get(&user1.0).unwrap()
-            );
-            assert_eq!(
-                &User {
-                    nickname: "user2".to_owned()
-                },
-                users.get(&user2.0).unwrap()
-            );
-            assert_eq!(
-                &User {
-                    nickname: "user1".to_owned()
-                },
-                users.get(&user3.0).unwrap()
-            );
-        }
+        let user3 = users.create("user1").await.unwrap();
+        assert_ne!(user3, user1);
+        assert_eq!(
+            users.user(user3).await.unwrap().unwrap(),
+            User {
+                nickname: "user1".to_owned()
+            }
+        );
+
+        let (count,): (i64,) = sqlx::query_as("select count(*) from users")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 3);
     }
 }

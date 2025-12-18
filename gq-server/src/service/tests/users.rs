@@ -3,12 +3,15 @@
 use actix_web::{App, test};
 use serde_json::json;
 
+use crate::context::Context;
 use crate::service;
 use crate::service::tests::{GraphQLResp, gql};
 
 #[actix_web::test]
 async fn create_ad_hoc_users() {
-    let app = App::new().configure(service::configure(false));
+    let context = Context::test().await.unwrap();
+    let service_config = service::configure(false, context).await.unwrap();
+    let app = App::new().configure(service_config);
     let app = test::init_service(app).await;
 
     // Adding single user
@@ -28,14 +31,17 @@ async fn create_ad_hoc_users() {
         &app,
         test::TestRequest::post()
             .uri("/api")
+            .insert_header(("content-type", "application/json"))
             .set_payload(query)
             .to_request(),
     )
     .await;
 
-    resp.data::<String>("users.createAdhoc.token");
+    println!("{resp:?}");
+    resp.data::<String>("users.createAdhoc.token").unwrap();
     assert_eq!(
-        resp.data::<String>("users.createAdhoc.user.nickname"),
+        resp.data::<String>("users.createAdhoc.user.nickname")
+            .unwrap(),
         "user1"
     );
 
@@ -54,11 +60,18 @@ async fn create_ad_hoc_users() {
         &app,
         test::TestRequest::post()
             .uri("/api")
+            .insert_header(("content-type", "application/json"))
             .set_payload(query)
             .to_request(),
     )
     .await;
 
-    assert_eq!(resp.data::<String>("users.m1.user.nickname"), "user2");
-    assert_eq!(resp.data::<String>("users.m2.user.nickname"), "user1");
+    assert_eq!(
+        resp.data::<String>("users.m1.user.nickname").unwrap(),
+        "user2"
+    );
+    assert_eq!(
+        resp.data::<String>("users.m2.user.nickname").unwrap(),
+        "user1"
+    );
 }

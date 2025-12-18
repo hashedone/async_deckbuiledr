@@ -1,6 +1,6 @@
 //! Utilities for services building
 
-use actix_web::web::Data;
+use actix_web::web::{Data, ServiceConfig};
 use actix_web::{HttpResponse, Result, get, post, web};
 use async_graphql::EmptySubscription;
 use async_graphql::http::GraphiQLSource;
@@ -31,12 +31,14 @@ async fn graphiql() -> Result<HttpResponse> {
 }
 
 /// Returns configuration function for the ActixWeb services
-pub fn configure(graphiql_enabled: bool) -> impl Fn(&mut web::ServiceConfig) {
-    let context = Context::new();
-    move |cfg| {
+pub async fn configure(
+    graphiql_enabled: bool,
+    context: Context,
+) -> color_eyre::Result<impl Fn(&mut web::ServiceConfig) + Clone> {
+    Ok(move |cfg: &mut ServiceConfig| {
         cfg.app_data(Data::new(context.schema())).service(api);
         if graphiql_enabled {
             cfg.service(graphiql);
         }
-    }
+    })
 }
