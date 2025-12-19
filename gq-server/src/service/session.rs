@@ -7,6 +7,7 @@ use actix_web::http::header::{self, HeaderName, HeaderValue};
 use actix_web::middleware::Next;
 use actix_web::web::Data;
 use actix_web::{Error, HttpMessage};
+use chrono::{Duration, Utc};
 
 use crate::context::Model;
 use crate::context::session::Session;
@@ -51,10 +52,22 @@ where
                 new_session_token = Some(session.token.clone());
                 session
             }
-            "Session" => auth
-                .verify_session_token(token)
-                .await
-                .map_err(|err| ErrorUnauthorized(err.to_string()))?,
+            "Session" => {
+                let mut session = auth
+                    .verify_session_token(token)
+                    .await
+                    .map_err(|err| ErrorUnauthorized(err.to_string()))?;
+
+                if session.expires_at < Utc::now() + Duration::minutes(10) {
+                    session = auth
+                        .create_session(session.user_id)
+                        .await
+                        .map_err(|_| ErrorUnauthorized("Refershing session failed"))?;
+                    new_session_token = Some(session.token.clone());
+                }
+
+                session
+            }
             _ => {
                 return Err(ErrorUnauthorized("Invalid Authorization token scheme"));
             }
