@@ -123,4 +123,9 @@ impl Model {
     pub fn auth(&self) -> Auth<'_, sqlx::SqlitePool> {
         Auth::new(&self.db)
     }
+
+    /// Performs cleanup on the model
+    pub async fn cleanup(&self) -> Result<()> {
+        self.auth().clean_sessions().await
+    }
 }

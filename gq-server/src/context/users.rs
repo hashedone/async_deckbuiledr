@@ -61,11 +61,9 @@ mod tests {
     use super::*;
     use sqlx::SqlitePool;
 
-    const USERS_MIGRATION: &str = include_str!("../../model/migrations/0_users.sql");
-
     async fn setup_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(USERS_MIGRATION).execute(&pool).await.unwrap();
+        sqlx::migrate!("model/migrations").run(&pool).await.unwrap();
         pool
     }
 

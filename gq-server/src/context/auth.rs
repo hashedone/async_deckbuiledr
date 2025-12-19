@@ -201,27 +201,28 @@ where
     pub async fn create_session(&self, user_id: i64) -> Result<Session> {
         let key_pair = AsymmetricKeyPair::<V4>::generate()?;
         let key_id = paserk::Id::from(&key_pair.public);
-        {
-            // For paseko session tokens we ignore any possibility of key collilsion - it is
-            // extremply unlikely, and if it happens the worse result is that someones else session
-            // expires.
-            let mut kid = String::new();
-            key_id.fmt(&mut kid)?;
-
-            let mut pk = String::new();
-            key_pair.public.fmt(&mut pk)?;
-            sqlx::query("insert into session_tokens (id, public_key) values (?, ?)")
-                .bind(kid)
-                .bind(pk)
-                .execute(self.db)
-                .await?;
-        }
 
         let session = SessionData { user_id };
         let valid_duration = Duration::from_hours(24);
 
         let claims = Claims::new_expires_in(&valid_duration).unwrap();
         let claims = session.append(claims)?;
+        let expires_at = expires_at(&claims)?;
+
+        // For paseko session tokens we ignore any possibility of key collilsion - it is
+        // extremply unlikely, and if it happens the worse result is that someones else session
+        // expires.
+        let mut kid = String::new();
+        key_id.fmt(&mut kid)?;
+
+        let mut pk = String::new();
+        key_pair.public.fmt(&mut pk)?;
+        sqlx::query("insert into session_tokens (id, public_key, expires_at) values (?, ?, ?)")
+            .bind(kid)
+            .bind(pk)
+            .bind(expires_at)
+            .execute(self.db)
+            .await?;
 
         let mut footer = Footer::new();
         footer.key_id(&key_id);
@@ -236,7 +237,7 @@ where
         Ok(Session {
             user_id,
             token,
-            expires_at: expires_at(&claims)?,
+            expires_at,
         })
     }
 
@@ -325,6 +326,16 @@ where
             .await?;
         Ok(())
     }
+
+    /// Cleans expired sessions from database.
+    pub async fn clean_sessions(&self) -> Result<()> {
+        let now = Utc::now();
+        sqlx::query("delete from session_tokens where expires_at < ?")
+            .bind(now)
+            .execute(self.db)
+            .await?;
+        Ok(())
+    }
 }
 
 /// Retrieves `expires_at` from the session claims.
@@ -343,13 +354,9 @@ mod tests {
     use crate::context::Users;
     use sqlx::SqlitePool;
 
-    const USERS_MIGRATION: &str = include_str!("../../model/migrations/0_users.sql");
-    const AUTH_MIGRATION: &str = include_str!("../../model/migrations/1_auth.sql");
-
     async fn setup_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(USERS_MIGRATION).execute(&pool).await.unwrap();
-        sqlx::query(AUTH_MIGRATION).execute(&pool).await.unwrap();
+        sqlx::migrate!("model/migrations").run(&pool).await.unwrap();
         pool
     }
 

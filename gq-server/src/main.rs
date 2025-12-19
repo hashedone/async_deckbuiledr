@@ -64,6 +64,7 @@ async fn main() -> Result<()> {
 
     let graphiql_enabled = config.graphiql;
     let context = Model::with_config(config.db).await?;
+    context.cleanup().await?;
     let service_config = service::configure(graphiql_enabled, context).await?;
     HttpServer::new(move || {
         App::new()
