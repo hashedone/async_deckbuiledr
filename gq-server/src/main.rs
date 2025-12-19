@@ -4,7 +4,7 @@ use actix_web::{App, HttpServer};
 use clap::Parser;
 use color_eyre::Result;
 use std::io::read_to_string;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_actix_web::TracingLogger;
 
 use crate::config::{Config, LogFormat};
@@ -64,7 +64,20 @@ async fn main() -> Result<()> {
 
     let graphiql_enabled = config.graphiql;
     let context = Model::with_config(config.db).await?;
-    context.cleanup().await?;
+
+    {
+        let context = context.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_hours(6));
+            loop {
+                interval.tick().await;
+                if let Err(err) = context.cleanup().await {
+                    warn!("Failed to cleanup context: {}", err);
+                }
+            }
+        });
+    }
+
     let service_config = service::configure(graphiql_enabled, context).await?;
     HttpServer::new(move || {
         App::new()
