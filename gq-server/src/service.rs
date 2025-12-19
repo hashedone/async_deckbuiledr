@@ -1,7 +1,8 @@
 //! Utilities for services building
 
+use actix_web::error::ErrorInternalServerError;
 use actix_web::web::{Data, ServiceConfig};
-use actix_web::{HttpMessage, middleware};
+use actix_web::{HttpMessage, delete, middleware};
 use actix_web::{HttpRequest, HttpResponse, Result, get, post, web};
 use async_graphql::EmptySubscription;
 use async_graphql::http::GraphiQLSource;
@@ -24,6 +25,20 @@ pub type Schema = async_graphql::Schema<Query, Mutation, EmptySubscription>;
 #[get("/refresh")]
 async fn refresh() -> &'static str {
     ""
+}
+
+/// Closes current session
+#[delete("/session")]
+async fn expire_session(req: HttpRequest, model: Data<Model>) -> Result<()> {
+    if let Some(session) = req.extensions_mut().remove::<Session>() {
+        model
+            .auth()
+            .expire_session(&session.token)
+            .await
+            .map_err(|_| ErrorInternalServerError("Cannot close session"))?;
+    }
+
+    Ok(())
 }
 
 /// ActixWeb GraphQL endpoint
@@ -59,6 +74,7 @@ pub async fn configure(
                 .wrap(middleware::from_fn(session::middleware))
                 .service(api)
                 .service(refresh)
+                .service(expire_session)
         };
 
         cfg.app_data(Data::new(context.schema()))

@@ -303,6 +303,28 @@ where
             expires_at: expires_at(&claims)?,
         })
     }
+
+    /// Expires session for given token
+    ///
+    /// The function doesn't verify if the token is properly sign, it only parses the token to retrieve the
+    /// token id and remove its entry from database.
+    pub async fn expire_session(&self, token: &str) -> Result<()> {
+        let token = UntrustedToken::<Public, V4>::try_from(token)?;
+        let mut footer = Footer::new();
+        footer.parse_bytes(token.untrusted_footer())?;
+
+        let key_id = footer
+            .get_claim("kid")
+            .ok_or_eyre(Error::MissingTokenId)?
+            .as_str()
+            .ok_or_eyre(Error::MissingTokenId)?;
+
+        sqlx::query("delete from session_tokens where id = ?")
+            .bind(key_id)
+            .execute(self.db)
+            .await?;
+        Ok(())
+    }
 }
 
 /// Retrieves `expires_at` from the session claims.
