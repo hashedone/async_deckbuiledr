@@ -26,6 +26,7 @@ async-graphql-actix-web = "7.0.17"
 tracing-actix-web = "0.7.19"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "uuid"] }
 semver = "1.0.27"
+chrono = "0.4.42"
 
 [dev-dependencies]
 warp = { version = "0.3" }

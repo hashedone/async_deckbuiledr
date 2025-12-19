@@ -1,7 +1,8 @@
 //! Utilities for services building
 
 use actix_web::web::{Data, ServiceConfig};
-use actix_web::{HttpResponse, Result, get, post, web};
+use actix_web::{HttpMessage, middleware};
+use actix_web::{HttpRequest, HttpResponse, Result, get, post, web};
 use async_graphql::EmptySubscription;
 use async_graphql::http::GraphiQLSource;
 use async_graphql_actix_web::{GraphQLRequest, GraphQLResponse};
@@ -9,7 +10,10 @@ use async_graphql_actix_web::{GraphQLRequest, GraphQLResponse};
 #[cfg(test)]
 mod tests;
 
-use crate::context::Context;
+mod session;
+
+use crate::context::Model;
+use crate::context::session::Session;
 use crate::mutation::Mutation;
 use crate::query::Query;
 
@@ -24,8 +28,16 @@ async fn refresh() -> &'static str {
 
 /// ActixWeb GraphQL endpoint
 #[post("/api")]
-async fn api(schema: web::Data<Schema>, request: GraphQLRequest) -> GraphQLResponse {
-    schema.execute(request.into_inner()).await.into()
+async fn api(
+    schema: web::Data<Schema>,
+    req: HttpRequest,
+    request: GraphQLRequest,
+) -> GraphQLResponse {
+    let mut request = request.into_inner();
+    if let Some(session) = req.extensions_mut().remove::<Session>() {
+        request = request.data(session);
+    }
+    schema.execute(request).await.into()
 }
 
 /// ActixWeb GraphQLi endpoint
@@ -39,14 +51,24 @@ async fn graphiql() -> Result<HttpResponse> {
 /// Returns configuration function for the ActixWeb services
 pub async fn configure(
     graphiql_enabled: bool,
-    context: Context,
+    context: Model,
 ) -> color_eyre::Result<impl Fn(&mut web::ServiceConfig) + Clone> {
-    Ok(move |cfg: &mut ServiceConfig| {
+    let cfg = move |cfg: &mut ServiceConfig| {
+        let session_aware = {
+            web::scope("")
+                .wrap(middleware::from_fn(session::middleware))
+                .service(api)
+                .service(refresh)
+        };
+
         cfg.app_data(Data::new(context.schema()))
-            .service(api)
-            .service(refresh);
+            .app_data(Data::new(context.clone()))
+            .service(session_aware);
+
         if graphiql_enabled {
             cfg.service(graphiql);
         }
-    })
+    };
+
+    Ok(cfg)
 }

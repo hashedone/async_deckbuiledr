@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use color_eyre::Result;
 
 pub mod auth;
+pub mod session;
 pub mod users;
 
 use async_graphql::EmptySubscription;
@@ -30,12 +31,12 @@ pub enum Error {
 
 /// Context for GraphQL schema
 #[derive(Clone)]
-pub struct Context {
+pub struct Model {
     /// Database access
     db: sqlx::SqlitePool,
 }
 
-impl Context {
+impl Model {
     /// Context for testing purposes - using the in-memory SQLite database
     pub async fn test() -> Result<Self> {
         let opts = SqliteConnectOptions::new()

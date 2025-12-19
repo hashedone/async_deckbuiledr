@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use base64::prelude::*;
+use chrono::{DateTime, Utc};
 use color_eyre::Result;
 use color_eyre::eyre::{OptionExt, ensure};
 use pasetors::claims::{Claims, ClaimsValidationRules};
@@ -16,6 +17,8 @@ use sha3::{Digest, Sha3_256};
 use sqlx::Executor;
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::context::session::Session;
 
 #[derive(Debug, Error)]
 enum Error {
@@ -31,6 +34,8 @@ enum Error {
     MissingClaims,
     #[error("Signature malformed in the database")]
     InvalidSignatureStored,
+    #[error("Invalid session claim {0}")]
+    InvalidSessionClaim(&'static str),
 }
 
 /// Secret used as key for signing user tokens. For now it is a silly constant for testing
@@ -134,7 +139,7 @@ pub struct SessionData {
 
 impl SessionData {
     //// Appends data to the session claims
-    fn append(self, mut claims: Claims) -> Result<Claims> {
+    fn append(&self, mut claims: Claims) -> Result<Claims> {
         claims.issuer(&self.user_id.to_string())?;
         Ok(claims)
     }
@@ -192,8 +197,8 @@ where
         }
     }
 
-    /// Creates new paseko session token for an user
-    pub async fn create_session_token(&self, user_id: i64) -> Result<String> {
+    /// Creates new for an user
+    pub async fn create_session(&self, user_id: i64) -> Result<Session> {
         let key_pair = AsymmetricKeyPair::<V4>::generate()?;
         let key_id = paserk::Id::from(&key_pair.public);
         {
@@ -213,8 +218,9 @@ where
         }
 
         let session = SessionData { user_id };
+        let valid_duration = Duration::from_hours(24);
 
-        let claims = Claims::new_expires_in(&Duration::from_hours(24)).unwrap();
+        let claims = Claims::new_expires_in(&valid_duration).unwrap();
         let claims = session.append(claims)?;
 
         let mut footer = Footer::new();
@@ -227,7 +233,11 @@ where
             Some(SESSION_APP_SECRET),
         )?;
 
-        Ok(token)
+        Ok(Session {
+            user_id,
+            token,
+            expires_at: expires_at(&claims)?,
+        })
     }
 
     /// Verifies an user token and returns the authorized user id on success
@@ -260,8 +270,9 @@ where
         .verify(token)
     }
 
-    pub async fn verify_session_token(&self, token: &str) -> Result<SessionData> {
-        let token = UntrustedToken::<Public, V4>::try_from(token)?;
+    pub async fn verify_session_token(&self, token_str: impl Into<String>) -> Result<Session> {
+        let token_str = token_str.into();
+        let token = UntrustedToken::<Public, V4>::try_from(&token_str)?;
         let mut footer = Footer::new();
         footer.parse_bytes(token.untrusted_footer())?;
 
@@ -284,8 +295,23 @@ where
         let token = public::verify(&key, &token, &rules, None, Some(SESSION_APP_SECRET))?;
 
         let claims = token.payload_claims().ok_or_eyre(Error::MissingClaims)?;
-        SessionData::from_claims(claims)
+        let session = SessionData::from_claims(claims)?;
+
+        Ok(Session {
+            user_id: session.user_id,
+            token: token_str,
+            expires_at: expires_at(&claims)?,
+        })
     }
+}
+
+/// Retrieves `expires_at` from the session claims.
+fn expires_at(claims: &Claims) -> Result<DateTime<Utc>> {
+    let expires_at = claims
+        .get_claim("exp")
+        .and_then(|issued_at| issued_at.as_str())
+        .ok_or(Error::InvalidSessionClaim("exp"))?;
+    expires_at.parse().map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -370,30 +396,30 @@ mod tests {
             let users = Users::new(&pool);
 
             let user1 = users.create("user1").await.unwrap();
-            let token1 = auth.create_session_token(user1).await.unwrap();
+            let token1 = auth.create_session(user1).await.unwrap().token;
 
             let session = auth.verify_session_token(&token1).await.unwrap();
-            assert_eq!(SessionData { user_id: user1 }, session);
+            assert_eq!(user1, session.user_id);
 
             let user2 = users.create("user2").await.unwrap();
-            let token2 = auth.create_session_token(user2).await.unwrap();
+            let token2 = auth.create_session(user2).await.unwrap().token;
             // Also multiple tokens for single user;
-            let token3 = auth.create_session_token(user2).await.unwrap();
+            let token3 = auth.create_session(user2).await.unwrap().token;
 
             let user4 = users.create("user1").await.unwrap();
-            let token4 = auth.create_session_token(user4).await.unwrap();
+            let token4 = auth.create_session(user4).await.unwrap().token;
 
-            let session = auth.verify_session_token(&token1).await.unwrap();
-            assert_eq!(SessionData { user_id: user1 }, session);
+            let session = auth.verify_session_token(token1).await.unwrap();
+            assert_eq!(user1, session.user_id);
 
-            let session = auth.verify_session_token(&token2).await.unwrap();
-            assert_eq!(SessionData { user_id: user2 }, session);
+            let session = auth.verify_session_token(token2).await.unwrap();
+            assert_eq!(user2, session.user_id);
 
-            let session = auth.verify_session_token(&token3).await.unwrap();
-            assert_eq!(SessionData { user_id: user2 }, session);
+            let session = auth.verify_session_token(token3).await.unwrap();
+            assert_eq!(user2, session.user_id);
 
-            let session = auth.verify_session_token(&token4).await.unwrap();
-            assert_eq!(SessionData { user_id: user4 }, session);
+            let session = auth.verify_session_token(token4).await.unwrap();
+            assert_eq!(user4, session.user_id);
         }
 
         #[tokio::test]
