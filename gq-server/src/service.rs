@@ -16,6 +16,12 @@ use crate::query::Query;
 /// Root GraphQL schema
 pub type Schema = async_graphql::Schema<Query, Mutation, EmptySubscription>;
 
+/// Noop endpoint existing only to refresh session if needed
+#[get("/refresh")]
+async fn refresh() -> &'static str {
+    ""
+}
+
 /// ActixWeb GraphQL endpoint
 #[post("/api")]
 async fn api(schema: web::Data<Schema>, request: GraphQLRequest) -> GraphQLResponse {
@@ -36,7 +42,9 @@ pub async fn configure(
     context: Context,
 ) -> color_eyre::Result<impl Fn(&mut web::ServiceConfig) + Clone> {
     Ok(move |cfg: &mut ServiceConfig| {
-        cfg.app_data(Data::new(context.schema())).service(api);
+        cfg.app_data(Data::new(context.schema()))
+            .service(api)
+            .service(refresh);
         if graphiql_enabled {
             cfg.service(graphiql);
         }
