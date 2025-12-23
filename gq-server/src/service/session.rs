@@ -52,6 +52,7 @@ where
                 new_session_token = Some(session.token.clone());
                 session
             }
+
             Authorization::Session(token) => {
                 let mut session = token
                     .authenticate(db)
@@ -59,18 +60,10 @@ where
                     .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
                 if session.expires_at < Utc::now() + Duration::minutes(10) {
-                    let new_session = session
-                        .user_id
-                        .create_session(db)
+                    session = session
+                        .refresh(db)
                         .await
                         .map_err(|_| ErrorUnauthorized("Refershing session failed"))?;
-
-                    session
-                        .expire(db)
-                        .await
-                        .map_err(|_| ErrorUnauthorized("Refreshing session failed"))?;
-
-                    session = new_session;
                     new_session_token = Some(session.token.clone());
                 }
 

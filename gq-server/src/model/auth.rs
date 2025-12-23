@@ -289,7 +289,7 @@ impl SessionToken {
 }
 
 /// Session data
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Session {
     /// User ID for this session
     pub user_id: UserId,
@@ -305,46 +305,16 @@ impl Session {
         db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
         user_id: UserId,
     ) -> Result<Self> {
-        let key_pair = AsymmetricKeyPair::<V4>::generate()?;
-        let key_id = paserk::Id::from(&key_pair.public);
+        let (session, kid, pk) = Self::new(user_id)?;
 
-        let session = SessionData { user_id };
-        let valid_duration = Duration::from_hours(24);
-
-        let claims = Claims::new_expires_in(&valid_duration).unwrap();
-        let claims = session.append(claims)?;
-        let expires_at = expires_at(&claims)?;
-
-        // For paseko session tokens we ignore any possibility of key collilsion - it is
-        // extremply unlikely, and if it happens the worse result is that someones else session
-        // expires.
-        let mut kid = String::new();
-        key_id.fmt(&mut kid)?;
-
-        let mut pk = String::new();
-        key_pair.public.fmt(&mut pk)?;
         sqlx::query("insert into session_tokens (id, public_key, expires_at) values (?, ?, ?)")
             .bind(kid)
             .bind(pk)
-            .bind(expires_at)
+            .bind(session.expires_at)
             .execute(db)
             .await?;
 
-        let mut footer = Footer::new();
-        footer.key_id(&key_id);
-
-        let token = public::sign(
-            &key_pair.secret,
-            &claims,
-            Some(&footer),
-            Some(SESSION_APP_SECRET),
-        )?;
-
-        Ok(Self {
-            user_id,
-            token: SessionToken(token),
-            expires_at,
-        })
+        Ok(session)
     }
 
     /// Verifies a session token, returnign the authenticated user id on success
@@ -405,6 +375,36 @@ impl Session {
         Ok(())
     }
 
+    /// Refreshes the session creating a new one, and updating the database entry to use new `key_id` and `public_key`.
+    pub async fn refresh(
+        self,
+        db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    ) -> Result<Self> {
+        let token = UntrustedToken::<Public, V4>::try_from(&self.token.0)?;
+        let mut footer = Footer::new();
+        footer.parse_bytes(token.untrusted_footer())?;
+
+        let prev_kid = footer
+            .get_claim("kid")
+            .ok_or_eyre(Error::MissingTokenId)?
+            .as_str()
+            .ok_or_eyre(Error::MissingTokenId)?;
+
+        let (session, kid, pk) = Self::new(self.user_id)?;
+
+        sqlx::query(
+            "update session_tokens set id = ?, public_key = ?, expires_at = ? where id = ?",
+        )
+        .bind(kid)
+        .bind(pk)
+        .bind(session.expires_at)
+        .bind(prev_kid)
+        .execute(db)
+        .await?;
+
+        Ok(session)
+    }
+
     /// Cleans expired sessions from database.
     pub async fn cleanup(db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>) -> Result<()> {
         let now = Utc::now();
@@ -413,6 +413,49 @@ impl Session {
             .execute(db)
             .await?;
         Ok(())
+    }
+
+    /// Creates new session for an user.
+    ///
+    /// The session data are not stored in the database. The `(session, key_id, public_key)` tuple is returned instead
+    /// for the purpose of storing the session.
+    fn new(user_id: UserId) -> Result<(Self, String, String)> {
+        let key_pair = AsymmetricKeyPair::<V4>::generate()?;
+        let key_id = paserk::Id::from(&key_pair.public);
+
+        let session = SessionData { user_id };
+        let valid_duration = Duration::from_hours(24);
+
+        let claims = Claims::new_expires_in(&valid_duration).unwrap();
+        let claims = session.append(claims)?;
+        let expires_at = expires_at(&claims)?;
+
+        // For paseko session tokens we ignore any possibility of key collilsion - it is
+        // extremply unlikely, and if it happens the worse result is that someones else session
+        // expires.
+        let mut kid = String::new();
+        key_id.fmt(&mut kid)?;
+
+        let mut pk = String::new();
+        key_pair.public.fmt(&mut pk)?;
+
+        let mut footer = Footer::new();
+        footer.key_id(&key_id);
+
+        let token = public::sign(
+            &key_pair.secret,
+            &claims,
+            Some(&footer),
+            Some(SESSION_APP_SECRET),
+        )?;
+
+        let session = Self {
+            user_id,
+            token: SessionToken(token),
+            expires_at,
+        };
+
+        Ok((session, kid, pk))
     }
 }
 
@@ -549,7 +592,22 @@ mod tests {
 
             session.expire(&pool).await.unwrap();
 
-            let _ = Session::authenticate(&pool, token).await.unwrap_err();
+            let _ = token.authenticate(&pool).await.unwrap_err();
+        }
+
+        #[tokio::test]
+        async fn session_refresh() {
+            let pool = setup_pool().await;
+
+            let user_id = User::new("user1").create(&pool).await.unwrap();
+            let old_session = user_id.create_session(&pool).await.unwrap();
+            let session = old_session.clone().refresh(&pool).await.unwrap();
+
+            assert_ne!(old_session.token, session.token);
+
+            let _ = old_session.token.authenticate(&pool).await.unwrap_err();
+            let authenticated = session.token.clone().authenticate(&pool).await.unwrap();
+            assert_eq!(session, authenticated);
         }
     }
 }
