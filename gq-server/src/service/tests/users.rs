@@ -3,7 +3,7 @@
 use actix_web::{App, test};
 use serde_json::json;
 
-use crate::context::Model;
+use crate::model::Model;
 use crate::service;
 use crate::service::tests::{GraphQLResp, gql};
 

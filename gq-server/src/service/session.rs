@@ -3,14 +3,14 @@
 use actix_web::body::MessageBody;
 use actix_web::dev::ServiceResponse;
 use actix_web::error::ErrorUnauthorized;
-use actix_web::http::header::{self, HeaderName, HeaderValue};
+use actix_web::http::header::{self, HeaderName};
 use actix_web::middleware::Next;
 use actix_web::web::Data;
 use actix_web::{Error, HttpMessage};
 use chrono::{Duration, Utc};
 
-use crate::context::Model;
-use crate::context::session::Session;
+use crate::model::Model;
+use crate::model::auth::{Authorization, SessionToken};
 
 const SESSION_TOKEN_HEADER: HeaderName = HeaderName::from_static("x-session-token");
 
@@ -21,64 +21,70 @@ pub async fn middleware<B>(
 where
     B: MessageBody + 'static,
 {
-    let mut new_session_token: Option<String> = None;
+    let mut new_session_token: Option<SessionToken> = None;
     if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
         let auth_header = auth_header
             .to_str()
             .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
-        let (scheme, token) = auth_header
-            .split_once(' ')
-            .ok_or_else(|| ErrorUnauthorized("Invalid Authorization header"))?;
+        let token: Authorization = auth_header
+            .parse()
+            .map_err(|_| ErrorUnauthorized("Cannot parse authorization token"))?;
 
         let context: Data<Model> = req
             .app_data()
             .cloned()
             .ok_or_else(|| ErrorUnauthorized("Missing context"))?;
 
-        let auth = context.auth();
-        let session = match scheme {
-            "AdHoc" => {
-                let user_id = auth
-                    .verify_user_token(token)
+        let db = context.db();
+        let session = match token {
+            Authorization::AdHoc(token) => {
+                let user_id = token
+                    .authenticate(db)
                     .await
                     .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
-                let session = auth
-                    .create_session(user_id)
+                let session = user_id
+                    .create_session(db)
                     .await
                     .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
                 new_session_token = Some(session.token.clone());
                 session
             }
-            "Session" => {
-                let mut session = auth
-                    .verify_session_token(token)
+            Authorization::Session(token) => {
+                let mut session = token
+                    .authenticate(db)
                     .await
                     .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
                 if session.expires_at < Utc::now() + Duration::minutes(10) {
-                    session = auth
-                        .create_session(session.user_id)
+                    let new_session = session
+                        .user_id
+                        .create_session(db)
                         .await
                         .map_err(|_| ErrorUnauthorized("Refershing session failed"))?;
+
+                    session
+                        .expire(db)
+                        .await
+                        .map_err(|_| ErrorUnauthorized("Refreshing session failed"))?;
+
+                    session = new_session;
                     new_session_token = Some(session.token.clone());
                 }
 
                 session
             }
-            _ => {
-                return Err(ErrorUnauthorized("Invalid Authorization token scheme"));
-            }
         };
 
-        req.extensions_mut().insert::<Session>(session);
+        req.extensions_mut().insert(session);
     }
 
     let mut response = next.call(req).await?;
     if let Some(session_token) = new_session_token {
-        let header_value = HeaderValue::from_str(&session_token)
+        let header_value = session_token
+            .into_header()
             .map_err(|err| ErrorUnauthorized(err.to_string()))?;
         response
             .headers_mut()

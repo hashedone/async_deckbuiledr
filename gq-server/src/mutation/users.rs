@@ -3,8 +3,9 @@
 use async_graphql::{Context, Object, Result, SimpleObject};
 use tracing::{info, instrument};
 
-use crate::context::Model;
-use crate::context::users::User;
+use crate::model::Model;
+use crate::model::auth::AdHocToken;
+use crate::model::users::User;
 
 /// Type returned when the AD-hoc user is created
 #[derive(Debug, Clone, SimpleObject)]
@@ -12,7 +13,7 @@ struct CreatedAdHocUser {
     /// Created user info
     user: User,
     /// Authorization token for this user
-    token: String,
+    token: AdHocToken,
 }
 
 #[derive(Debug, Default)]
@@ -32,17 +33,14 @@ impl UsersMutations {
         nickname: String,
     ) -> Result<CreatedAdHocUser> {
         let context: &Model = context.data()?;
-        let users = context.users();
-        let user_id = users.create(&nickname).await?;
+        let db = context.db();
 
-        let auth = context.auth();
-        let token = auth.create_user_token(user_id).await?;
+        let user = User { nickname };
+        let user_id = user.clone().create(db).await?;
+        let token = user_id.create_adhoc_token(db).await?;
 
-        info!(%user_id, nickname, "Created ad-hoc user");
+        info!(%user_id, nickname=user.nickname, "Created ad-hoc user");
 
-        Ok(CreatedAdHocUser {
-            user: User { nickname },
-            token,
-        })
+        Ok(CreatedAdHocUser { user, token })
     }
 }

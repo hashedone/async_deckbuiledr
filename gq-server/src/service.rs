@@ -13,8 +13,8 @@ mod tests;
 
 mod session;
 
-use crate::context::Model;
-use crate::context::session::Session;
+use crate::model::Model;
+use crate::model::auth::Session;
 use crate::mutation::Mutation;
 use crate::query::Query;
 
@@ -31,9 +31,9 @@ async fn refresh() -> &'static str {
 #[delete("/session")]
 async fn expire_session(req: HttpRequest, model: Data<Model>) -> Result<()> {
     if let Some(session) = req.extensions_mut().remove::<Session>() {
-        model
-            .auth()
-            .expire_session(&session.token)
+        let db = model.db();
+        session
+            .expire(db)
             .await
             .map_err(|_| ErrorInternalServerError("Cannot close session"))?;
     }

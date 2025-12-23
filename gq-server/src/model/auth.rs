@@ -1,11 +1,14 @@
 //! Authoriazation data
 
+use std::str::FromStr;
 use std::time::Duration;
 
+use actix_web::http::header::HeaderValue;
+use async_graphql::scalar;
 use base64::prelude::*;
 use chrono::{DateTime, Utc};
 use color_eyre::Result;
-use color_eyre::eyre::{OptionExt, ensure};
+use color_eyre::eyre::{OptionExt, bail, ensure};
 use pasetors::claims::{Claims, ClaimsValidationRules};
 use pasetors::footer::Footer;
 use pasetors::keys::{AsymmetricKeyPair, AsymmetricPublicKey, Generate};
@@ -13,15 +16,16 @@ use pasetors::paserk::{self, FormatAsPaserk};
 use pasetors::token::UntrustedToken;
 use pasetors::version4::V4;
 use pasetors::{Public, public};
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
-use sqlx::Executor;
+use sqlx::prelude::Type;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::context::session::Session;
+use crate::model::users::UserId;
 
 #[derive(Debug, Error)]
-enum Error {
+pub enum Error {
     #[error("Invalid token format")]
     InvalidTokenFormat,
     #[error("Token doesn't exist")]
@@ -36,6 +40,12 @@ enum Error {
     InvalidSignatureStored,
     #[error("Invalid session claim {0}")]
     InvalidSessionClaim(&'static str),
+    #[error("Token ID collision")]
+    TokenIdCollision,
+    #[error("Invalid authorization format")]
+    InvalidAuthorization,
+    #[error("Invalid authorization scheme")]
+    InvalidAuthorizationScheme,
 }
 
 /// Secret used as key for signing user tokens. For now it is a silly constant for testing
@@ -45,7 +55,105 @@ const USER_TOKEN_APP_SECRET: &str = "AsyncDeckbuilderAppTokenSecret";
 /// PASETO implicit assertion for session tokens
 const SESSION_APP_SECRET: &[u8] = b"AsyncDeckbuilderAppSessionTokenSecret";
 
-/// The short-living user token
+/// Authentication method based on `Authorization` HTTP header
+#[derive(Debug, Clone)]
+pub enum Authorization {
+    /// AdHoc token
+    AdHoc(AdHocToken),
+    /// Session token
+    Session(SessionToken),
+}
+
+impl FromStr for Authorization {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (scheme, token) = s.split_once(' ').ok_or(Error::InvalidAuthorization)?;
+
+        match scheme {
+            "AdHoc" => Ok(Self::AdHoc(AdHocToken(token.to_owned()))),
+            "Session" => Ok(Self::Session(SessionToken(token.to_owned()))),
+            _ => Err(Error::InvalidAuthorizationScheme),
+        }
+    }
+}
+
+/// Newtype for the ad-hoc tokens string
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Type, Serialize, Deserialize)]
+#[sqlx(transparent)]
+#[serde(transparent)]
+pub struct AdHocToken(String);
+
+scalar!(AdHocToken);
+
+impl AdHocToken {
+    /// Creates new authorization token for an user storing it in the database
+    ///
+    /// Returned string is a encoded token to be used in authorization as the `Authorization: AdHoc [token]`
+    pub async fn create(
+        db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+        user_id: UserId,
+    ) -> Result<Self> {
+        let (user_token, token) = UserToken::generate(user_id);
+
+        let token_id = Uuid::new_v4();
+
+        let insertion = sqlx::query(
+                "insert into adhoc_tokens (id, user_id, secret, signature) values (?, ?, ?, ?) on conflict(id) do nothing",
+            )
+            .bind(token_id)
+            .bind(user_id)
+            .bind(user_token.secret)
+            .bind(user_token.signature.as_slice())
+            .execute(db)
+            .await?;
+
+        if insertion.rows_affected() == 0 {
+            bail!(Error::TokenIdCollision);
+        }
+
+        let token_id = BASE64_STANDARD.encode(token_id.as_bytes());
+        Ok(Self(format!("{token_id}.{token}")))
+    }
+
+    /// Verifies an user token, returnign the authenticated user id on success
+    ///
+    /// The argument is the user token string extracted from the `Authorization` header
+    pub async fn authenticate(
+        &self,
+        db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    ) -> Result<UserId> {
+        let (token_id, token) = self
+            .0
+            .split_once('.')
+            .ok_or_eyre(Error::InvalidTokenFormat)?;
+
+        let token_id: [u8; 16] = base64::prelude::BASE64_STANDARD
+            .decode(token_id)?
+            .try_into()
+            .map_err(|_| Error::InvalidTokenFormat)?;
+        let token_id = Uuid::from_bytes(token_id);
+
+        let (user_id, secret, signature): (UserId, Uuid, Vec<u8>) =
+            sqlx::query_as("select user_id, secret, signature from adhoc_tokens where id = ?")
+                .bind(token_id)
+                .fetch_optional(db)
+                .await?
+                .ok_or_eyre(Error::NonExistingToken)?;
+        let signature: [u8; 32] = signature
+            .try_into()
+            .map_err(|_| Error::InvalidSignatureStored)?;
+
+        UserToken {
+            user_id,
+            secret,
+            signature,
+        }
+        .verify(token)
+    }
+}
+
+/// The short-living user token data
 ///
 /// Used to quick login for short-living/temporary users. When temporary user is created, to
 /// confirm his identify in the future, the user token is generated. User token has a structure of:
@@ -74,10 +182,10 @@ const SESSION_APP_SECRET: &[u8] = b"AsyncDeckbuilderAppSessionTokenSecret";
 /// short-living users, and security is a secondary need here. For true authorization of long
 /// living users with higher privilidges (eg. creating games), the user would be authorized ideally
 /// by some 3rd-party authorization solution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct UserToken {
     /// Authorized user identifier
-    user_id: i64,
+    user_id: UserId,
     /// Secret to build the signing key
     secret: Uuid,
     /// Expected hash
@@ -89,7 +197,7 @@ impl UserToken {
     ///
     /// Returns pair of generated `UserToken` and `token` part of the Authentication Token that
     /// will be needed to pass for verification.
-    fn generate(user_id: i64) -> (Self, String) {
+    fn generate(user_id: UserId) -> (Self, String) {
         let secret = Uuid::new_v4();
         let token = Uuid::new_v4();
         let token = BASE64_STANDARD.encode(token.as_bytes());
@@ -112,7 +220,7 @@ impl UserToken {
     }
 
     /// Verifies the user token returning user id if verification is successfull
-    fn verify(&self, token: &str) -> Result<i64> {
+    fn verify(&self, token: &str) -> Result<UserId> {
         let secret = BASE64_STANDARD.encode(self.secret.as_bytes());
         let user_id = self.user_id;
 
@@ -134,7 +242,7 @@ impl UserToken {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionData {
     /// User authorized by this token
-    pub user_id: i64,
+    pub user_id: UserId,
 }
 
 impl SessionData {
@@ -154,51 +262,49 @@ impl SessionData {
     }
 }
 
-// Authoriation data access
-pub struct Auth<'a, Db> {
-    /// Database connection
-    db: &'a Db,
-}
+/// Newtype for session token string
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionToken(String);
 
-impl<'a, Db> Auth<'a, Db> {
-    /// Creates new users accessor
-    pub(super) fn new(db: &'a Db) -> Self {
-        Self { db }
+scalar!(SessionToken);
+
+impl std::fmt::Display for SessionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
-impl<'a, Db> Auth<'a, Db>
-where
-    &'a Db: Executor<'a, Database = sqlx::Sqlite>,
-{
-    /// Creates new authorization token for an user
-    pub async fn create_user_token(&self, user_id: i64) -> Result<String> {
-        let (user_token, token) = UserToken::generate(user_id);
-
-        // Looping to retry in case of unlikely token id collision. We avoid using auto incrementing
-        // for token id generation to make tokens less predictable
-        loop {
-            let token_id = Uuid::new_v4();
-
-            let insertion = sqlx::query(
-                "insert into user_tokens (id, user_id, secret, signature) values (?, ?, ?, ?) on conflict(id) do nothing",
-            )
-            .bind(token_id)
-            .bind(user_id)
-            .bind(user_token.secret)
-            .bind(user_token.signature.as_slice())
-            .execute(self.db)
-            .await?;
-
-            if insertion.rows_affected() == 1 {
-                let token_id = BASE64_STANDARD.encode(token_id.as_bytes());
-                return Ok(format!("{token_id}.{token}"));
-            }
-        }
+impl SessionToken {
+    /// Authenticates a token returning session
+    pub async fn authenticate(
+        self,
+        db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    ) -> Result<Session> {
+        Session::authenticate(db, self).await
     }
 
-    /// Creates new for an user
-    pub async fn create_session(&self, user_id: i64) -> Result<Session> {
+    pub fn into_header(self) -> Result<HeaderValue> {
+        HeaderValue::from_str(&self.0).map_err(Into::into)
+    }
+}
+
+/// Session data
+#[derive(Debug, Clone)]
+pub struct Session {
+    /// User ID for this session
+    pub user_id: UserId,
+    /// Session token
+    pub token: SessionToken,
+    /// Session expiration time
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Session {
+    /// Creates a new session for given user storing it in DB
+    pub async fn create(
+        db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+        user_id: UserId,
+    ) -> Result<Self> {
         let key_pair = AsymmetricKeyPair::<V4>::generate()?;
         let key_id = paserk::Id::from(&key_pair.public);
 
@@ -221,7 +327,7 @@ where
             .bind(kid)
             .bind(pk)
             .bind(expires_at)
-            .execute(self.db)
+            .execute(db)
             .await?;
 
         let mut footer = Footer::new();
@@ -234,46 +340,21 @@ where
             Some(SESSION_APP_SECRET),
         )?;
 
-        Ok(Session {
+        Ok(Self {
             user_id,
-            token,
+            token: SessionToken(token),
             expires_at,
         })
     }
 
-    /// Verifies an user token and returns the authorized user id on success
-    pub async fn verify_user_token(&self, token: &str) -> Result<i64> {
-        let (token_id, token) = token
-            .split_once('.')
-            .ok_or_eyre(Error::InvalidTokenFormat)?;
-
-        let token_id: [u8; 16] = base64::prelude::BASE64_STANDARD
-            .decode(token_id)?
-            .try_into()
-            .map_err(|_| Error::InvalidTokenFormat)?;
-        let token_id = Uuid::from_bytes(token_id);
-
-        let (user_id, secret, signature): (i64, Uuid, Vec<u8>) =
-            sqlx::query_as("select user_id, secret, signature from user_tokens where id = ?")
-                .bind(token_id)
-                .fetch_optional(self.db)
-                .await?
-                .ok_or_eyre(Error::NonExistingToken)?;
-        let signature: [u8; 32] = signature
-            .try_into()
-            .map_err(|_| Error::InvalidSignatureStored)?;
-
-        UserToken {
-            user_id,
-            secret,
-            signature,
-        }
-        .verify(token)
-    }
-
-    pub async fn verify_session_token(&self, token_str: impl Into<String>) -> Result<Session> {
-        let token_str = token_str.into();
-        let token = UntrustedToken::<Public, V4>::try_from(&token_str)?;
+    /// Verifies a session token, returnign the authenticated user id on success
+    ///
+    /// The argument is the user token string extracted from the `Authorization` header
+    pub async fn authenticate(
+        db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+        session_token: SessionToken,
+    ) -> Result<Self> {
+        let token = UntrustedToken::<Public, V4>::try_from(&session_token.0)?;
         let mut footer = Footer::new();
         footer.parse_bytes(token.untrusted_footer())?;
 
@@ -286,7 +367,7 @@ where
         let (key,): (String,) =
             sqlx::query_as("select public_key from session_tokens where id = ?")
                 .bind(key_id)
-                .fetch_optional(self.db)
+                .fetch_optional(db)
                 .await?
                 .ok_or_eyre(Error::NonExistingToken)?;
 
@@ -298,19 +379,16 @@ where
         let claims = token.payload_claims().ok_or_eyre(Error::MissingClaims)?;
         let session = SessionData::from_claims(claims)?;
 
-        Ok(Session {
+        Ok(Self {
             user_id: session.user_id,
-            token: token_str,
+            token: session_token,
             expires_at: expires_at(&claims)?,
         })
     }
 
-    /// Expires session for given token
-    ///
-    /// The function doesn't verify if the token is properly sign, it only parses the token to retrieve the
-    /// token id and remove its entry from database.
-    pub async fn expire_session(&self, token: &str) -> Result<()> {
-        let token = UntrustedToken::<Public, V4>::try_from(token)?;
+    /// Expires session removing it's entry in database
+    pub async fn expire(self, db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>) -> Result<()> {
+        let token = UntrustedToken::<Public, V4>::try_from(&self.token.0)?;
         let mut footer = Footer::new();
         footer.parse_bytes(token.untrusted_footer())?;
 
@@ -322,17 +400,17 @@ where
 
         sqlx::query("delete from session_tokens where id = ?")
             .bind(key_id)
-            .execute(self.db)
+            .execute(db)
             .await?;
         Ok(())
     }
 
     /// Cleans expired sessions from database.
-    pub async fn clean_sessions(&self) -> Result<()> {
+    pub async fn cleanup(db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>) -> Result<()> {
         let now = Utc::now();
         sqlx::query("delete from session_tokens where expires_at < ?")
             .bind(now)
-            .execute(self.db)
+            .execute(db)
             .await?;
         Ok(())
     }
@@ -351,7 +429,7 @@ fn expires_at(claims: &Claims) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
 
-    use crate::context::Users;
+    use crate::model::users::User;
     use sqlx::SqlitePool;
 
     async fn setup_pool() -> SqlitePool {
@@ -366,50 +444,52 @@ mod tests {
         #[tokio::test]
         async fn verify_with_generated_token() {
             let pool = setup_pool().await;
-            let auth = Auth::new(&pool);
-            let users = Users::new(&pool);
 
-            let user1 = users.create("user1").await.unwrap();
-            let token1 = auth.create_user_token(user1).await.unwrap();
-            let authorized_user = auth.verify_user_token(&token1).await.unwrap();
+            let user1 = User::new("user1").create(&pool).await.unwrap();
+            let token1 = user1.create_adhoc_token(&pool).await.unwrap();
+            let authorized_user = token1.authenticate(&pool).await.unwrap();
 
             assert_eq!(user1, authorized_user);
 
             // Checking if everything works when another users are added
-            let user2 = users.create("user2").await.unwrap();
-            let token2 = auth.create_user_token(user2).await.unwrap();
+            let user2 = User::new("user2").create(&pool).await.unwrap();
+            let token2 = user2.create_adhoc_token(&pool).await.unwrap();
+
             // Also multiple tokens for single user;
-            let token3 = auth.create_user_token(user2).await.unwrap();
+            let token3 = user2.create_adhoc_token(&pool).await.unwrap();
 
-            let user4 = users.create("user1").await.unwrap();
-            let token4 = auth.create_user_token(user4).await.unwrap();
+            let user4 = User::new("user1").create(&pool).await.unwrap();
+            let token4 = user4.create_adhoc_token(&pool).await.unwrap();
 
-            let authorized_user = auth.verify_user_token(&token1).await.unwrap();
+            let authorized_user = token1.authenticate(&pool).await.unwrap();
             assert_eq!(user1, authorized_user);
 
-            let authorized_user = auth.verify_user_token(&token2).await.unwrap();
+            let authorized_user = token2.authenticate(&pool).await.unwrap();
             assert_eq!(user2, authorized_user);
 
-            let authorized_user = auth.verify_user_token(&token3).await.unwrap();
+            let authorized_user = token3.authenticate(&pool).await.unwrap();
             assert_eq!(user2, authorized_user);
 
-            let authorized_user = auth.verify_user_token(&token4).await.unwrap();
+            let authorized_user = token4.authenticate(&pool).await.unwrap();
             assert_eq!(user4, authorized_user);
         }
 
         #[tokio::test]
         async fn verify_with_random_data_fails() {
             let pool = setup_pool().await;
-            let auth = Auth::new(&pool);
-            let _ = auth.verify_user_token("fake_token").await.unwrap_err();
+
+            let _ = AdHocToken("fake_token".into())
+                .authenticate(&pool)
+                .await
+                .unwrap_err();
         }
 
         #[tokio::test]
         async fn verify_with_invalid_key_fails() {
             let pool = setup_pool().await;
-            let auth = Auth::new(&pool);
-            let _ = auth
-                .verify_user_token("U7PydAY1TsKmmVGf4LS3YA==.PUGKx45wSK+0rhl4F2TDdg==")
+
+            let _ = AdHocToken("U7PydAY1TsKmmVGf4LS3YA==.PUGKx45wSK+0rhl4F2TDdg==".into())
+                .authenticate(&pool)
                 .await
                 .unwrap_err();
         }
@@ -421,41 +501,55 @@ mod tests {
         #[tokio::test]
         async fn verify_with_generated_token() {
             let pool = setup_pool().await;
-            let auth = Auth::new(&pool);
-            let users = Users::new(&pool);
 
-            let user1 = users.create("user1").await.unwrap();
-            let token1 = auth.create_session(user1).await.unwrap().token;
+            let user1 = User::new("user1").create(&pool).await.unwrap();
+            let token1 = user1.create_session(&pool).await.unwrap().token;
 
-            let session = auth.verify_session_token(&token1).await.unwrap();
+            let session = token1.clone().authenticate(&pool).await.unwrap();
             assert_eq!(user1, session.user_id);
 
-            let user2 = users.create("user2").await.unwrap();
-            let token2 = auth.create_session(user2).await.unwrap().token;
+            let user2 = User::new("user2").create(&pool).await.unwrap();
+            let token2 = user2.create_session(&pool).await.unwrap().token;
+
             // Also multiple tokens for single user;
-            let token3 = auth.create_session(user2).await.unwrap().token;
+            let token3 = user2.create_session(&pool).await.unwrap().token;
 
-            let user4 = users.create("user1").await.unwrap();
-            let token4 = auth.create_session(user4).await.unwrap().token;
+            let user4 = User::new("user1").create(&pool).await.unwrap();
+            let token4 = user4.create_session(&pool).await.unwrap().token;
 
-            let session = auth.verify_session_token(token1).await.unwrap();
+            let session = token1.authenticate(&pool).await.unwrap();
             assert_eq!(user1, session.user_id);
 
-            let session = auth.verify_session_token(token2).await.unwrap();
+            let session = token2.authenticate(&pool).await.unwrap();
             assert_eq!(user2, session.user_id);
 
-            let session = auth.verify_session_token(token3).await.unwrap();
+            let session = token3.authenticate(&pool).await.unwrap();
             assert_eq!(user2, session.user_id);
 
-            let session = auth.verify_session_token(token4).await.unwrap();
+            let session = token4.authenticate(&pool).await.unwrap();
             assert_eq!(user4, session.user_id);
         }
 
         #[tokio::test]
         async fn verify_with_random_data_fails() {
             let pool = setup_pool().await;
-            let auth = Auth::new(&pool);
-            let _ = auth.verify_session_token("fake_token").await.unwrap_err();
+            let _ = SessionToken("fake_token".into())
+                .authenticate(&pool)
+                .await
+                .unwrap_err();
+        }
+
+        #[tokio::test]
+        async fn verify_with_expired_session_fails() {
+            let pool = setup_pool().await;
+
+            let user_id = User::new("user1").create(&pool).await.unwrap();
+            let session = user_id.create_session(&pool).await.unwrap();
+            let token = session.token.clone();
+
+            session.expire(&pool).await.unwrap();
+
+            let _ = Session::authenticate(&pool, token).await.unwrap_err();
         }
     }
 }

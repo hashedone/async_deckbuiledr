@@ -8,11 +8,11 @@ use tracing::{info, warn};
 use tracing_actix_web::TracingLogger;
 
 use crate::config::{Config, LogFormat};
-use crate::context::Model;
+use crate::model::Model;
 use crate::opt::Opt;
 
 mod config;
-pub mod context;
+pub mod model;
 mod mutation;
 mod opt;
 mod query;

@@ -5,16 +5,14 @@ use std::path::PathBuf;
 use color_eyre::Result;
 
 pub mod auth;
-pub mod session;
 pub mod users;
 
 use async_graphql::EmptySubscription;
-pub use auth::Auth;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use thiserror::Error;
-pub use users::Users;
 
 use crate::config;
+use crate::model::auth::Session;
 use crate::mutation::Mutation;
 use crate::query::Query;
 use crate::service::Schema;
@@ -114,18 +112,13 @@ impl Model {
             .finish()
     }
 
-    /// Returns users accessor
-    pub fn users(&self) -> Users<'_, sqlx::SqlitePool> {
-        Users::new(&self.db)
-    }
-
-    /// Returns authorization accessor
-    pub fn auth(&self) -> Auth<'_, sqlx::SqlitePool> {
-        Auth::new(&self.db)
+    /// Accesses the DB pool
+    pub fn db(&self) -> &sqlx::SqlitePool {
+        &self.db
     }
 
     /// Performs cleanup on the model
     pub async fn cleanup(&self) -> Result<()> {
-        self.auth().clean_sessions().await
+        Session::cleanup(&self.db).await
     }
 }
