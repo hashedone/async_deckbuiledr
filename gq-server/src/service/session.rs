@@ -21,7 +21,18 @@ pub async fn middleware<B>(
 where
     B: MessageBody + 'static,
 {
+    let context: Data<Model> = req
+        .app_data()
+        .cloned()
+        .ok_or_else(|| ErrorUnauthorized("Missing context"))?;
+
     let mut new_session_token: Option<SessionToken> = None;
+    let db = context.db();
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|_| ErrorUnauthorized("Failed to start DB transaction"))?;
+
     if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
         let auth_header = auth_header
             .to_str()
@@ -31,21 +42,15 @@ where
             .parse()
             .map_err(|_| ErrorUnauthorized("Cannot parse authorization token"))?;
 
-        let context: Data<Model> = req
-            .app_data()
-            .cloned()
-            .ok_or_else(|| ErrorUnauthorized("Missing context"))?;
-
-        let db = context.db();
         let session = match token {
             Authorization::AdHoc(token) => {
                 let user_id = token
-                    .authenticate(db)
+                    .authenticate(&mut *tx)
                     .await
                     .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
                 let session = user_id
-                    .create_session(db)
+                    .create_session(&mut *tx)
                     .await
                     .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
@@ -55,13 +60,13 @@ where
 
             Authorization::Session(token) => {
                 let mut session = token
-                    .authenticate(db)
+                    .authenticate(&mut *tx)
                     .await
                     .map_err(|err| ErrorUnauthorized(err.to_string()))?;
 
                 if session.expires_at < Utc::now() + Duration::minutes(10) {
                     session = session
-                        .refresh(db)
+                        .refresh(&mut *tx)
                         .await
                         .map_err(|_| ErrorUnauthorized("Refershing session failed"))?;
                     new_session_token = Some(session.token.clone());
@@ -83,5 +88,10 @@ where
             .headers_mut()
             .insert(SESSION_TOKEN_HEADER, header_value);
     }
+
+    tx.commit()
+        .await
+        .map_err(|_| ErrorUnauthorized("Committing transaction failed"))?;
+
     Ok(response)
 }

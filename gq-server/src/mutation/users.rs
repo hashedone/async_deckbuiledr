@@ -34,13 +34,15 @@ impl UsersMutations {
     ) -> Result<CreatedAdHocUser> {
         let context: &Model = context.data()?;
         let db = context.db();
+        let mut tx = db.begin().await?;
 
         let user = User { nickname };
-        let user_id = user.clone().create(db).await?;
-        let token = user_id.create_adhoc_token(db).await?;
+        let user_id = user.clone().create(&mut *tx).await?;
+        let token = user_id.create_adhoc_token(&mut *tx).await?;
+
+        tx.commit().await?;
 
         info!(%user_id, nickname=user.nickname, "Created ad-hoc user");
-
         Ok(CreatedAdHocUser { user, token })
     }
 }
