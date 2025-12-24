@@ -23,6 +23,8 @@ struct GraphQLResp {
     /// It is still possible to make this optional passing `T` as `Option<_>` for testing the
     /// error path.
     pub data: Value,
+    /// GraphQL errors
+    pub errors: Option<Vec<serde_json::Value>>,
 }
 
 impl GraphQLResp {

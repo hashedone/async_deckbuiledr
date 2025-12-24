@@ -118,6 +118,7 @@ async fn refresh_with_adhoc_session_flow() {
     )
     .await;
 
+    assert_eq!(None, resp.errors);
     let adhoc_token = resp.data::<String>("users.createAdhoc.token").unwrap();
 
     let resp = test::call_service(
@@ -263,6 +264,7 @@ async fn expire_session_rejects_deleted_token() {
     )
     .await;
 
+    assert_eq!(None, resp.errors);
     let adhoc_token = resp.data::<String>("users.createAdhoc.token").unwrap();
 
     let resp = test::call_service(
