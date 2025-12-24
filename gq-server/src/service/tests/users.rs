@@ -308,3 +308,87 @@ async fn expire_session_rejects_deleted_token() {
         actix_web::http::StatusCode::UNAUTHORIZED
     );
 }
+
+#[actix_web::test]
+async fn adhoc_session_refresh_and_expire_flow() {
+    let context = Model::test().await.unwrap();
+    let service_config = service::configure(false, context).await.unwrap();
+    let app = App::new().configure(service_config);
+    let app = test::init_service(app).await;
+
+    let query = gql(
+        r#"mutation($name: String!) {
+                users {
+                    createAdhoc(nickname: $name) {
+                        token
+                    }
+                }
+            }"#,
+        json!({ "name": "user1" }),
+    );
+
+    let resp: GraphQLResp = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/api")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(query)
+            .to_request(),
+    )
+    .await;
+
+    let adhoc_token = resp.data::<String>("users.createAdhoc.token").unwrap();
+
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/refresh")
+            .insert_header(("Authorization", format!("AdHoc {adhoc_token}")))
+            .to_request(),
+    )
+    .await;
+    assert!(resp.status().is_success());
+
+    let session_token = resp
+        .headers()
+        .get("x-session-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap()
+        .to_string();
+
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/refresh")
+            .insert_header(("Authorization", format!("Session {session_token}")))
+            .to_request(),
+    )
+    .await;
+    assert!(resp.status().is_success());
+    assert!(!resp.headers().contains_key("x-session-token"));
+
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::delete()
+            .uri("/session")
+            .insert_header(("Authorization", format!("Session {session_token}")))
+            .to_request(),
+    )
+    .await;
+    assert!(resp.status().is_success());
+
+    let err = test::try_call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/refresh")
+            .insert_header(("Authorization", format!("Session {session_token}")))
+            .to_request(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        err.as_response_error().status_code(),
+        actix_web::http::StatusCode::UNAUTHORIZED
+    );
+}
