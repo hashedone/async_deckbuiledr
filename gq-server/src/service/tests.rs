@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, from_value};
 
+mod lobby;
 mod users;
 
 /// Prepares graphql API request body

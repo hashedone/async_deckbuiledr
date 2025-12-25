@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use color_eyre::Result;
 
 pub mod auth;
+pub mod game;
 pub mod users;
 
 use async_graphql::EmptySubscription;
