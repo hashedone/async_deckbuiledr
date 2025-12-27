@@ -5,13 +5,13 @@ use tracing::{info, instrument};
 
 use crate::model::Model;
 use crate::model::auth::AdHocToken;
-use crate::model::users::User;
+use crate::model::users::{User, UserId};
 
 /// Type returned when the AD-hoc user is created
 #[derive(Debug, Clone, SimpleObject)]
 struct CreatedAdHocUser {
-    /// Created user info
-    user: User,
+    /// Created user id
+    user: UserId,
     /// Authorization token for this user
     token: AdHocToken,
 }
@@ -36,13 +36,18 @@ impl UsersMutations {
         let db = context.db();
         let mut tx = db.begin().await?;
 
-        let user = User { nickname };
-        let user_id = user.clone().create(&mut *tx).await?;
+        let user = User {
+            nickname: nickname.clone(),
+        };
+        let user_id = user.create(&mut *tx).await?;
         let token = user_id.create_adhoc_token(&mut *tx).await?;
 
         tx.commit().await?;
 
-        info!(%user_id, nickname=user.nickname, "Created ad-hoc user");
-        Ok(CreatedAdHocUser { user, token })
+        info!(%user_id, nickname, "Created ad-hoc user");
+        Ok(CreatedAdHocUser {
+            user: user_id,
+            token,
+        })
     }
 }

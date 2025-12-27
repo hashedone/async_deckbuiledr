@@ -1,7 +1,8 @@
 //! Serivce users storage
 
-use async_graphql::SimpleObject;
+use async_graphql::{SimpleObject, scalar};
 use color_eyre::eyre::Result;
+use serde::{Deserialize, Serialize};
 use sqlx::prelude::Type;
 use thiserror::Error;
 
@@ -14,9 +15,12 @@ pub enum Error {
 }
 
 /// Newtype for user id
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Type, Serialize, Deserialize)]
 #[sqlx(transparent)]
+#[serde(transparent)]
 pub struct UserId(i64);
+
+scalar!(UserId);
 
 impl std::fmt::Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

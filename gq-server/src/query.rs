@@ -1,20 +1,23 @@
 //! Main query entry point
 
-use async_graphql::Object;
-use derivative::Derivative;
+use async_graphql::{Context, Object, Result};
 
-mod users;
+use crate::model::{
+    Model,
+    users::{User, UserId},
+};
 
-#[derive(Debug, Derivative)]
-#[derivative(Default = "new")]
-pub struct Query {
-    /// User related queries
-    users: users::UsersQueries,
-}
+#[derive(Debug, Default)]
+pub struct Query;
 
 #[Object]
 impl Query {
-    async fn users(&self) -> &users::UsersQueries {
-        &self.users
+    /// Gets user by their id
+    pub async fn user<'c>(&self, ctx: &Context<'c>, id: UserId) -> Result<Option<User>> {
+        let model: &Model = ctx.data()?;
+        let db = model.db();
+
+        let user = User::fetch(db, id).await?;
+        Ok(user)
     }
 }

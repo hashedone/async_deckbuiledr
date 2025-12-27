@@ -4,6 +4,7 @@ use actix_web::{App, test};
 use serde_json::json;
 
 use crate::model::Model;
+use crate::model::users::UserId;
 use crate::service;
 use crate::service::tests::{GraphQLResp, gql};
 
@@ -20,7 +21,7 @@ async fn create_ad_hoc_users() {
                 users {
                     createAdhoc(nickname: $name) {
                         token
-                        user { nickname }
+                        user
                     }
                 }
             }"#,
@@ -39,18 +40,33 @@ async fn create_ad_hoc_users() {
 
     println!("{resp:?}");
     resp.data::<String>("users.createAdhoc.token").unwrap();
-    assert_eq!(
-        resp.data::<String>("users.createAdhoc.user.nickname")
-            .unwrap(),
-        "user1"
+    let user1: UserId = resp.data("users.createAdhoc.user").unwrap();
+
+    let query = gql(
+        r#"query($id: UserId!) { user(id: $id) { nickname } }"#,
+        json!({ "id": user1 }),
     );
 
-    // Add two more user, introduce nickname collistion
+    let resp: GraphQLResp = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/api")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(query)
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(None, resp.errors);
+    let nickname: String = resp.data("user.nickname").unwrap();
+    assert_eq!("user1", nickname);
+
+    // Add two more users, introduce nickname collistion
     let query = gql(
         r#"mutation($name1: String!, $name2: String!) {
             users {
-                m1: createAdhoc(nickname: $name1) { user { nickname } }
-                m2: createAdhoc(nickname: $name2) { user { nickname } }
+                m1: createAdhoc(nickname: $name1) { user }
+                m2: createAdhoc(nickname: $name2) { user }
             }
         }"#,
         json!({ "name1": "user2", "name2": "user1" }),
@@ -66,14 +82,51 @@ async fn create_ad_hoc_users() {
     )
     .await;
 
-    assert_eq!(
-        resp.data::<String>("users.m1.user.nickname").unwrap(),
-        "user2"
+    // Verify all users are distinct
+    let user2: UserId = resp.data("users.m1.user").unwrap();
+    let user3: UserId = resp.data("users.m2.user").unwrap();
+
+    let query = gql(
+        r#"query($id: UserId!) { user(id: $id) { nickname } }"#,
+        json!({ "id": user2 }),
     );
-    assert_eq!(
-        resp.data::<String>("users.m2.user.nickname").unwrap(),
-        "user1"
+
+    let resp: GraphQLResp = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/api")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(query)
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(None, resp.errors);
+    let nickname: String = resp.data("user.nickname").unwrap();
+    assert_eq!("user2", nickname);
+
+    let query = gql(
+        r#"query($id: UserId!) { user(id: $id) { nickname } }"#,
+        json!({ "id": user3 }),
     );
+
+    let resp: GraphQLResp = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/api")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(query)
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(None, resp.errors);
+    let nickname: String = resp.data("user.nickname").unwrap();
+    assert_eq!("user1", nickname);
+
+    assert_ne!(user1, user2);
+    assert_ne!(user2, user3);
+    assert_ne!(user1, user3);
 }
 
 #[actix_web::test]

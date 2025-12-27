@@ -108,7 +108,7 @@ impl Model {
 
     /// Buids schema with attached context
     pub fn schema(&self) -> Schema {
-        Schema::build(Query::new(), Mutation::new(), EmptySubscription)
+        Schema::build(Query, Mutation::new(), EmptySubscription)
             .data(self.clone())
             .finish()
     }
