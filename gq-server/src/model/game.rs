@@ -49,6 +49,24 @@ impl LobbyGame {
             player2: None,
         })
     }
+
+    /// Fetches the lobby game by it's id
+    pub async fn fetch(
+        db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+        id: GameId,
+    ) -> Result<Option<Self>> {
+        let row = sqlx::query_as("select id, created_by, player1, player2 from lobby where id = ?")
+            .bind(&id)
+            .fetch_optional(db)
+            .await?;
+
+        Ok(row.map(|(id, created_by, player1, player2)| Self {
+            id,
+            created_by,
+            player1,
+            player2,
+        }))
+    }
 }
 
 #[cfg(test)]
