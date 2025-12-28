@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::model::Model;
 use crate::model::users::UserId;
 use crate::service;
-use crate::service::tests::{GraphQLResp, gql};
+use crate::service::tests::gql;
 
 #[actix_web::test]
 async fn create_ad_hoc_users() {
@@ -16,112 +16,64 @@ async fn create_ad_hoc_users() {
     let app = test::init_service(app).await;
 
     // Adding single user
-    let query = gql(
-        r#"mutation($name: String!) {
+    let resp = gql(r#"mutation($name: String!) {
                 users {
                     createAdhoc(nickname: $name) {
                         token
                         user
                     }
                 }
-            }"#,
-        json!({ "name": "user1" }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+            }"#)
+    .variables(json!({ "name": "user1" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     println!("{resp:?}");
     resp.data::<String>("users.createAdhoc.token").unwrap();
     let user1: UserId = resp.data("users.createAdhoc.user").unwrap();
 
-    let query = gql(
-        r#"query($id: UserId!) { user(id: $id) { nickname } }"#,
-        json!({ "id": user1 }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+    let resp = gql(r#"query($id: UserId!) { user(id: $id) { nickname } }"#)
+        .variables(json!({ "id": user1 }))
+        .call(&app)
+        .await
+        .unwrap();
 
     assert_eq!(None, resp.errors);
     let nickname: String = resp.data("user.nickname").unwrap();
     assert_eq!("user1", nickname);
 
     // Add two more users, introduce nickname collistion
-    let query = gql(
-        r#"mutation($name1: String!, $name2: String!) {
+    let resp = gql(r#"mutation($name1: String!, $name2: String!) {
             users {
                 m1: createAdhoc(nickname: $name1) { user }
                 m2: createAdhoc(nickname: $name2) { user }
             }
-        }"#,
-        json!({ "name1": "user2", "name2": "user1" }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "name1": "user2", "name2": "user1" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     // Verify all users are distinct
     let user2: UserId = resp.data("users.m1.user").unwrap();
     let user3: UserId = resp.data("users.m2.user").unwrap();
 
-    let query = gql(
-        r#"query($id: UserId!) { user(id: $id) { nickname } }"#,
-        json!({ "id": user2 }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+    let resp = gql(r#"query($id1: UserId!, $id2: UserId!) {
+            u1: user(id: $id1) { nickname },
+            u2: user(id: $id2) { nickname }
+        }"#)
+    .variables(json!({ "id1": user2, "id2": user3 }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(None, resp.errors);
-    let nickname: String = resp.data("user.nickname").unwrap();
+
+    let nickname: String = resp.data("u1.nickname").unwrap();
     assert_eq!("user2", nickname);
 
-    let query = gql(
-        r#"query($id: UserId!) { user(id: $id) { nickname } }"#,
-        json!({ "id": user3 }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
-
-    assert_eq!(None, resp.errors);
-    let nickname: String = resp.data("user.nickname").unwrap();
+    let nickname: String = resp.data("u2.nickname").unwrap();
     assert_eq!("user1", nickname);
 
     assert_ne!(user1, user2);
@@ -150,29 +102,20 @@ async fn refresh_with_adhoc_session_flow() {
     let app = App::new().configure(service_config);
     let app = test::init_service(app).await;
 
-    let query = gql(
-        r#"mutation($name: String!) {
+    let resp = gql(r#"mutation($name: String!) {
                 users {
                     createAdhoc(nickname: $name) {
                         token
                     }
                 }
-            }"#,
-        json!({ "name": "user1" }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+            }"#)
+    .variables(json!({ "name": "user1" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(None, resp.errors);
-    let adhoc_token = resp.data::<String>("users.createAdhoc.token").unwrap();
+    let adhoc_token: String = resp.data("users.createAdhoc.token").unwrap();
 
     let resp = test::call_service(
         &app,
@@ -296,26 +239,17 @@ async fn expire_session_rejects_deleted_token() {
     let app = App::new().configure(service_config);
     let app = test::init_service(app).await;
 
-    let query = gql(
-        r#"mutation($name: String!) {
+    let resp = gql(r#"mutation($name: String!) {
                 users {
                     createAdhoc(nickname: $name) {
                         token
                     }
                 }
-            }"#,
-        json!({ "name": "user1" }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+            }"#)
+    .variables(json!({ "name": "user1" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(None, resp.errors);
     let adhoc_token = resp.data::<String>("users.createAdhoc.token").unwrap();
@@ -369,26 +303,17 @@ async fn adhoc_session_refresh_and_expire_flow() {
     let app = App::new().configure(service_config);
     let app = test::init_service(app).await;
 
-    let query = gql(
-        r#"mutation($name: String!) {
+    let resp = gql(r#"mutation($name: String!) {
                 users {
                     createAdhoc(nickname: $name) {
                         token
                     }
                 }
-            }"#,
-        json!({ "name": "user1" }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+            }"#)
+    .variables(json!({ "name": "user1" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     let adhoc_token = resp.data::<String>("users.createAdhoc.token").unwrap();
 

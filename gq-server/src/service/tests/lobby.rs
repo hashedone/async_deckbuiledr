@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::model::Model;
 use crate::model::users::UserId;
 use crate::service;
-use crate::service::tests::{GraphQLResp, gql};
+use crate::service::tests::gql;
 
 #[actix_web::test]
 async fn create_two_lobby_games() {
@@ -15,99 +15,61 @@ async fn create_two_lobby_games() {
     let app = App::new().configure(service_config);
     let app = test::init_service(app).await;
 
-    let query = gql(
-        r#"mutation($name: String!) {
+    let resp = gql(r#"mutation($name: String!) {
                 users {
                     createAdhoc(nickname: $name) {
                         token
                         user
                     }
                 }
-            }"#,
-        json!({ "name": "user1" }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+            }"#)
+    .variables(json!({ "name": "user1" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
-    let adhoc_token = resp.data::<String>("users.createAdhoc.token").unwrap();
+    let adhoc_token: String = resp.data("users.createAdhoc.token").unwrap();
     let user_id: UserId = resp.data("users.createAdhoc.user").unwrap();
 
-    let query = gql(
-        r#"mutation {
+    let resp = gql(r#"mutation {
             lobby {
                 createGame
             }
-        }"#,
-        json!({}),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .insert_header(("Authorization", format!("AdHoc {adhoc_token}")))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .adhoc(&adhoc_token)
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
-    let game_id1 = resp.data::<String>("lobby.createGame").unwrap();
+    let game_id1: String = resp.data("lobby.createGame").unwrap();
 
-    let query = gql(
-        r#"mutation {
+    let resp = gql(r#"mutation {
             lobby {
                 createGame
             }
-        }"#,
-        json!({}),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .insert_header(("Authorization", format!("AdHoc {adhoc_token}")))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .adhoc(&adhoc_token)
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
-    let game_id2 = resp.data::<String>("lobby.createGame").unwrap();
+    let game_id2: String = resp.data("lobby.createGame").unwrap();
 
     assert_ne!(game_id1, game_id2);
 
-    let query = gql(
-        r#"query($id: GameId!) {
+    let resp = gql(r#"query($id: GameId!) {
             lobby(id: $id) {
                 createdBy
                 players
             }
-        }"#,
-        json!({ "id": game_id1 }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "id": game_id1 }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let created_by: UserId = resp.data("lobby.createdBy").unwrap();
@@ -115,25 +77,16 @@ async fn create_two_lobby_games() {
     assert_eq!(user_id, created_by);
     assert_eq!(players, vec![]);
 
-    let query = gql(
-        r#"query($id: GameId!) {
+    let resp = gql(r#"query($id: GameId!) {
             lobby(id: $id) {
                 createdBy
                 players
             }
-        }"#,
-        json!({ "id": game_id2 }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "id": game_id2 }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let created_by: UserId = resp.data("lobby.createdBy").unwrap();
@@ -149,104 +102,80 @@ async fn lobby_game_join_flow() {
     let app = App::new().configure(service_config);
     let app = test::init_service(app).await;
 
-    let create_user = |name: &str| {
-        gql(
-            r#"mutation($name: String!) {
+    let resp = gql(r#"mutation($name: String!) {
                 users {
                     createAdhoc(nickname: $name) {
                         token
                         user
                     }
                 }
-            }"#,
-            json!({ "name": name }),
-        )
-    };
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(create_user("creator"))
-            .to_request(),
-    )
-    .await;
+            }"#)
+    .variables(json!({ "name": "creator" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let creator_token: String = resp.data("users.createAdhoc.token").unwrap();
     let creator_id: UserId = resp.data("users.createAdhoc.user").unwrap();
 
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(create_user("player1"))
-            .to_request(),
-    )
-    .await;
+    let resp = gql(r#"mutation($name: String!) {
+                users {
+                    createAdhoc(nickname: $name) {
+                        token
+                        user
+                    }
+                }
+            }"#)
+    .variables(json!({ "name": "player1" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let player1_token: String = resp.data("users.createAdhoc.token").unwrap();
     let player1_id: UserId = resp.data("users.createAdhoc.user").unwrap();
 
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(create_user("player2"))
-            .to_request(),
-    )
-    .await;
+    let resp = gql(r#"mutation($name: String!) {
+                users {
+                    createAdhoc(nickname: $name) {
+                        token
+                        user
+                    }
+                }
+            }"#)
+    .variables(json!({ "name": "player2" }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let player2_token: String = resp.data("users.createAdhoc.token").unwrap();
     let player2_id: UserId = resp.data("users.createAdhoc.user").unwrap();
 
-    let query = gql(
-        r#"mutation {
+    let resp = gql(r#"mutation {
             lobby {
                 createGame
             }
-        }"#,
-        json!({}),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .insert_header(("Authorization", format!("AdHoc {creator_token}")))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .adhoc(&creator_token)
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let game_id: String = resp.data("lobby.createGame").unwrap();
 
-    let query = gql(
-        r#"query($id: GameId!) {
+    let resp = gql(r#"query($id: GameId!) {
             lobby(id: $id) {
                 createdBy
                 players
             }
-        }"#,
-        json!({ "id": game_id }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "id": game_id }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let created_by: UserId = resp.data("lobby.createdBy").unwrap();
@@ -254,49 +183,31 @@ async fn lobby_game_join_flow() {
     assert_eq!(creator_id, created_by);
     assert_eq!(players, vec![]);
 
-    let query = gql(
-        r#"mutation($id: GameId!) {
+    let resp = gql(r#"mutation($id: GameId!) {
             lobby {
                 joinGame(gameId: $id)
             }
-        }"#,
-        json!({ "id": game_id }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .insert_header(("Authorization", format!("AdHoc {player1_token}")))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "id": game_id }))
+    .adhoc(&player1_token)
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let joined_game_id: String = resp.data("lobby.joinGame").unwrap();
     assert_eq!(joined_game_id, game_id);
 
-    let query = gql(
-        r#"query($id: GameId!) {
+    let resp = gql(r#"query($id: GameId!) {
             lobby(id: $id) {
                 createdBy
                 players
             }
-        }"#,
-        json!({ "id": game_id }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "id": game_id }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let created_by: UserId = resp.data("lobby.createdBy").unwrap();
@@ -304,49 +215,31 @@ async fn lobby_game_join_flow() {
     assert_eq!(creator_id, created_by);
     assert_eq!(players, vec![player1_id]);
 
-    let query = gql(
-        r#"mutation($id: GameId!) {
+    let resp = gql(r#"mutation($id: GameId!) {
             lobby {
                 joinGame(gameId: $id)
             }
-        }"#,
-        json!({ "id": game_id }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .insert_header(("Authorization", format!("AdHoc {player2_token}")))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "id": game_id }))
+    .adhoc(&player2_token)
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let joined_game_id: String = resp.data("lobby.joinGame").unwrap();
     assert_eq!(joined_game_id, game_id);
 
-    let query = gql(
-        r#"query($id: GameId!) {
+    let resp = gql(r#"query($id: GameId!) {
             lobby(id: $id) {
                 createdBy
                 players
             }
-        }"#,
-        json!({ "id": game_id }),
-    );
-
-    let resp: GraphQLResp = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/api")
-            .insert_header(("content-type", "application/json"))
-            .set_payload(query)
-            .to_request(),
-    )
-    .await;
+        }"#)
+    .variables(json!({ "id": game_id }))
+    .call(&app)
+    .await
+    .unwrap();
 
     assert_eq!(resp.errors, None);
     let created_by: UserId = resp.data("lobby.createdBy").unwrap();
