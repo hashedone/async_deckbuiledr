@@ -481,6 +481,19 @@ mod tests {
         pool
     }
 
+    fn session_key_id(token: &SessionToken) -> String {
+        let token = UntrustedToken::<Public, V4>::try_from(&token.0).expect("valid session token");
+        let mut footer = Footer::new();
+        footer
+            .parse_bytes(token.untrusted_footer())
+            .expect("valid footer");
+        footer
+            .get_claim("kid")
+            .and_then(|kid| kid.as_str())
+            .expect("kid claim")
+            .to_owned()
+    }
+
     mod user_token {
         use super::*;
 
@@ -515,6 +528,16 @@ mod tests {
 
             let authorized_user = token4.authenticate(&pool).await.unwrap();
             assert_eq!(user4, authorized_user);
+
+            for (user, expected_cnt) in [(user1, 1), (user2, 2), (user4, 1)] {
+                let (cnt,): (i64,) =
+                    sqlx::query_as("select count(*) from adhoc_tokens where user_id = ?")
+                        .bind(user)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                assert_eq!(cnt, expected_cnt, "User: {user:?}");
+            }
         }
 
         #[tokio::test]
@@ -560,17 +583,35 @@ mod tests {
             let user4 = User::new("user1").create(&pool).await.unwrap();
             let token4 = user4.create_session(&pool).await.unwrap().token;
 
-            let session = token1.authenticate(&pool).await.unwrap();
+            let session = token1.clone().authenticate(&pool).await.unwrap();
             assert_eq!(user1, session.user_id);
 
-            let session = token2.authenticate(&pool).await.unwrap();
+            let session = token2.clone().authenticate(&pool).await.unwrap();
             assert_eq!(user2, session.user_id);
 
-            let session = token3.authenticate(&pool).await.unwrap();
+            let session = token3.clone().authenticate(&pool).await.unwrap();
             assert_eq!(user2, session.user_id);
 
-            let session = token4.authenticate(&pool).await.unwrap();
+            let session = token4.clone().authenticate(&pool).await.unwrap();
             assert_eq!(user4, session.user_id);
+
+            let (count,): (i64,) = sqlx::query_as("select count(*) from session_tokens")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 4);
+
+            for token in [&token1, &token2, &token3, &token4] {
+                let key_id = session_key_id(token);
+                let (exists,): (i64,) =
+                    sqlx::query_as("select count(*) from session_tokens where id = ?")
+                        .bind(key_id)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+
+                assert_eq!(exists, 1, "Token: {token:?}");
+            }
         }
 
         #[tokio::test]
@@ -593,6 +634,12 @@ mod tests {
             session.expire(&pool).await.unwrap();
 
             let _ = token.authenticate(&pool).await.unwrap_err();
+
+            let (count,): (i64,) = sqlx::query_as("select count(*) from session_tokens")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 0);
         }
 
         #[tokio::test]
@@ -605,9 +652,39 @@ mod tests {
 
             assert_ne!(old_session.token, session.token);
 
-            let _ = old_session.token.authenticate(&pool).await.unwrap_err();
+            let _ = old_session
+                .token
+                .clone()
+                .authenticate(&pool)
+                .await
+                .unwrap_err();
             let authenticated = session.token.clone().authenticate(&pool).await.unwrap();
             assert_eq!(session, authenticated);
+
+            let (count,): (i64,) = sqlx::query_as("select count(*) from session_tokens")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1);
+
+            let old_key_id = session_key_id(&old_session.token);
+            let new_key_id = session_key_id(&session.token);
+
+            let (old_exists,): (i64,) =
+                sqlx::query_as("select count(*) from session_tokens where id = ?")
+                    .bind(old_key_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(old_exists, 0);
+
+            let (new_exists,): (i64,) =
+                sqlx::query_as("select count(*) from session_tokens where id = ?")
+                    .bind(new_key_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(new_exists, 1);
         }
     }
 }

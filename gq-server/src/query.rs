@@ -33,7 +33,7 @@ impl Query {
 
         let game = LobbyGame::fetch(db, id).await?;
         let info = game.map(|game| GameInfo {
-            created_by: game.created_by,
+            created_by: game.created_by(),
             players: [game.player1.into_iter(), game.player2.into_iter()]
                 .into_iter()
                 .flatten()

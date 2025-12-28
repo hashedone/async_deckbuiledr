@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::model::users::UserId;
 
 /// Game ID newtype
-#[derive(Debug, Clone, PartialEq, Type, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Type, Serialize, Deserialize)]
 #[sqlx(transparent)]
 #[serde(transparent)]
 pub struct GameId(Uuid);
@@ -20,9 +20,9 @@ scalar!(GameId);
 #[derive(Debug, Clone)]
 pub struct LobbyGame {
     /// Game ID
-    pub id: GameId,
+    id: GameId,
     /// Created by user ID
-    pub created_by: UserId,
+    created_by: UserId,
     /// Player 1 ID
     pub player1: Option<UserId>,
     /// Player 2 ID
@@ -30,6 +30,16 @@ pub struct LobbyGame {
 }
 
 impl LobbyGame {
+    /// Returns the game ID
+    pub fn id(&self) -> GameId {
+        self.id
+    }
+
+    /// Returns the game creator id
+    pub fn created_by(&self) -> UserId {
+        self.created_by
+    }
+
     /// Creates a new game in the lobby
     pub async fn create(
         db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
@@ -67,6 +77,18 @@ impl LobbyGame {
             player2,
         }))
     }
+
+    /// Updates the game state in DB
+    pub async fn update(&self, db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>) -> Result<()> {
+        sqlx::query("update lobby set player1 = ?, player2 = ? where id = ?")
+            .bind(self.player1)
+            .bind(self.player2)
+            .bind(self.id)
+            .execute(db)
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -93,10 +115,24 @@ mod tests {
         assert_eq!(game1.player1, None);
         assert_eq!(game1.player2, None);
 
+        let fetched1 = LobbyGame::fetch(&pool, game1.id.clone()).await.unwrap();
+        let fetched1 = fetched1.expect("game1 should exist");
+        assert_eq!(fetched1.created_by, user);
+        assert_eq!(fetched1.player1, None);
+        assert_eq!(fetched1.player2, None);
+        assert_eq!(fetched1.id, game1.id);
+
         let game2 = LobbyGame::create(&pool, user).await.unwrap();
         assert_eq!(game2.created_by, user);
         assert_eq!(game2.player1, None);
         assert_eq!(game2.player2, None);
+
+        let fetched2 = LobbyGame::fetch(&pool, game2.id.clone()).await.unwrap();
+        let fetched2 = fetched2.expect("game2 should exist");
+        assert_eq!(fetched2.created_by, user);
+        assert_eq!(fetched2.player1, None);
+        assert_eq!(fetched2.player2, None);
+        assert_eq!(fetched2.id, game2.id);
 
         assert_ne!(game1.id, game2.id);
 

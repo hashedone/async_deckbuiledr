@@ -164,5 +164,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 3);
+
+        let rows: Vec<(String,)> = sqlx::query_as("select nickname from users order by id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let nicknames: Vec<String> = rows.into_iter().map(|(nickname,)| nickname).collect();
+        assert_eq!(&nicknames, &["user1", "user2", "user1"]);
     }
 }
