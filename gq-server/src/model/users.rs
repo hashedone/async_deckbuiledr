@@ -5,6 +5,7 @@ use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::Type;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::model::auth::{AdHocToken, Session};
 
@@ -18,7 +19,7 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Type, Serialize, Deserialize)]
 #[sqlx(transparent)]
 #[serde(transparent)]
-pub struct UserId(i64);
+pub struct UserId(Uuid);
 
 scalar!(UserId);
 
@@ -32,7 +33,7 @@ impl std::str::FromStr for UserId {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let id = s.parse().map_err(|_| Error::InvalidUserId)?;
+        let id = Uuid::parse_str(s).map_err(|_| Error::InvalidUserId)?;
         Ok(Self(id))
     }
 }
@@ -96,12 +97,14 @@ impl User {
         self,
         db: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     ) -> Result<UserId> {
-        let result = sqlx::query("insert into users(nickname) values (?)")
+        let user_id = UserId(Uuid::new_v4());
+        sqlx::query("insert into users(id, nickname) values (?, ?)")
+            .bind(user_id)
             .bind(self.nickname)
             .execute(db)
             .await?;
 
-        Ok(UserId(result.last_insert_rowid()))
+        Ok(user_id)
     }
 }
 
@@ -165,11 +168,11 @@ mod tests {
             .unwrap();
         assert_eq!(count, 3);
 
-        let rows: Vec<(String,)> = sqlx::query_as("select nickname from users order by id")
+        let rows: Vec<(String,)> = sqlx::query_as("select nickname from users order by nickname")
             .fetch_all(&pool)
             .await
             .unwrap();
         let nicknames: Vec<String> = rows.into_iter().map(|(nickname,)| nickname).collect();
-        assert_eq!(&nicknames, &["user1", "user2", "user1"]);
+        assert_eq!(&nicknames, &["user1", "user1", "user2"]);
     }
 }
