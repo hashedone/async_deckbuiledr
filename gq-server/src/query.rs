@@ -3,7 +3,7 @@
 use async_graphql::{Context, Object, Result, SimpleObject};
 
 use crate::model::Model;
-use crate::model::game::{GameId, LobbyGame};
+use crate::model::game::{Game, GameId, LobbyGame};
 use crate::model::users::{User, UserId};
 
 #[derive(Debug, Default)]
@@ -38,6 +38,20 @@ impl Query {
                 .into_iter()
                 .flatten()
                 .collect(),
+        });
+
+        Ok(info)
+    }
+
+    /// Gets the game in progres by it's id
+    pub async fn game<'c>(&self, ctx: &Context<'c>, id: GameId) -> Result<Option<GameInfo>> {
+        let model: &Model = ctx.data()?;
+        let db = model.db();
+
+        let game = Game::fetch(db, id).await?;
+        let info = game.map(|game| GameInfo {
+            created_by: game.created_by(),
+            players: vec![game.player1(), game.player2()],
         });
 
         Ok(info)

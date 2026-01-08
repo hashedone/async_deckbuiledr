@@ -56,4 +56,23 @@ impl LobbyMutations {
 
         Ok(game.id())
     }
+
+    #[instrument(skip(self, ctx))]
+    pub async fn start_game(&self, ctx: &Context<'_>, game_id: GameId) -> Result<GameId> {
+        let session: &Session = ctx.data_opt().ok_or("Unauthorized")?;
+        let model: &Model = ctx.data()?;
+        let db = model.db();
+        let game = LobbyGame::fetch(db, game_id)
+            .await?
+            .ok_or("Game not found")?;
+
+        if !game.is_involved(session.user_id) {
+            return Err("Only players involved in the game can start it".into());
+        }
+
+        let id = game.start(db).await?.id();
+
+        info!(?game_id, "Started game");
+        Ok(id)
+    }
 }
