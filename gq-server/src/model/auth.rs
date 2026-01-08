@@ -352,7 +352,7 @@ impl Session {
         Ok(Self {
             user_id: session.user_id,
             token: session_token,
-            expires_at: expires_at(&claims)?,
+            expires_at: expires_at(claims)?,
         })
     }
 

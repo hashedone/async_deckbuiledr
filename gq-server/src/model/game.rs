@@ -68,7 +68,7 @@ impl LobbyGame {
     ) -> Result<Self> {
         let id = GameId(Uuid::new_v4());
         sqlx::query("insert into lobby(id, created_by) values (?, ?)")
-            .bind(&id)
+            .bind(id)
             .bind(created_by)
             .execute(db)
             .await?;
@@ -87,7 +87,7 @@ impl LobbyGame {
         id: GameId,
     ) -> Result<Option<Self>> {
         let row = sqlx::query_as("select id, created_by, player1, player2 from lobby where id = ?")
-            .bind(&id)
+            .bind(id)
             .fetch_optional(db)
             .await?;
 
@@ -201,7 +201,7 @@ impl Game {
     ) -> Result<Option<Self>> {
         let game =
             sqlx::query_as("select id, created_by, player1, player2 from games where id = ?")
-                .bind(&id)
+                .bind(id)
                 .fetch_optional(db)
                 .await?
                 .map(|(id, created_by, player1, player2)| Game {
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(game1.player1, None);
         assert_eq!(game1.player2, None);
 
-        let fetched1 = LobbyGame::fetch(&pool, game1.id.clone()).await.unwrap();
+        let fetched1 = LobbyGame::fetch(&pool, game1.id).await.unwrap();
         let fetched1 = fetched1.expect("game1 should exist");
         assert_eq!(fetched1.created_by, user);
         assert_eq!(fetched1.player1, None);
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(game2.player1, None);
         assert_eq!(game2.player2, None);
 
-        let fetched2 = LobbyGame::fetch(&pool, game2.id.clone()).await.unwrap();
+        let fetched2 = LobbyGame::fetch(&pool, game2.id).await.unwrap();
         let fetched2 = fetched2.expect("game2 should exist");
         assert_eq!(fetched2.created_by, user);
         assert_eq!(fetched2.player1, None);
@@ -262,7 +262,7 @@ mod tests {
 
         let (created_by, player1, player2): (UserId, Option<UserId>, Option<UserId>) =
             sqlx::query_as("select created_by, player1, player2 from lobby where id = ?")
-                .bind(&game1.id)
+                .bind(game1.id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -270,7 +270,7 @@ mod tests {
 
         let (created_by, player1, player2): (UserId, Option<UserId>, Option<UserId>) =
             sqlx::query_as("select created_by, player1, player2 from lobby where id = ?")
-                .bind(&game2.id)
+                .bind(game2.id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();

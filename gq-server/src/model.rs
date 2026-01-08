@@ -87,7 +87,7 @@ impl Model {
                     .ok_or_else(|| Error::InvalidSQLitePath { path: path.clone() })?;
 
                 let opts = SqliteConnectOptions::new()
-                    .filename(&path)
+                    .filename(path)
                     .create_if_missing(true)
                     .foreign_keys(true);
 

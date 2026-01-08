@@ -30,7 +30,9 @@ async fn refresh() -> &'static str {
 /// Closes current session
 #[delete("/session")]
 async fn expire_session(req: HttpRequest, model: Data<Model>) -> Result<()> {
-    if let Some(session) = req.extensions_mut().remove::<Session>() {
+    let session = req.extensions_mut().remove::<Session>();
+
+    if let Some(session) = session {
         let db = model.db();
         session
             .expire(db)

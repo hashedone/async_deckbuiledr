@@ -94,8 +94,7 @@ struct GraphQLResp {
 impl GraphQLResp {
     /// Returns the deserialized data part at given json path
     fn data<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let data = path.split('.').fold(Ok(&self.data), |data, key| {
-            let data = data?;
+        let data = path.split('.').try_fold(&self.data, |data, key| {
             let Value::Object(fields) = data else {
                 bail!("{path} is not a valid path in {:?}", self.data);
             };
